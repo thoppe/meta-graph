@@ -11,10 +11,19 @@ The simple connected meta-graph of order n, M_n, maps each simple connected grap
 
 Small examples
 
+## Meta simple 3
 ![](figures/meta_simple_3.png)
+
+## Meta simple 4
 ![](figures/meta_simple_4.png)
+
+## Meta simple 5
 ![](figures/meta_simple_5.png)
+
+## Meta simple 6
 ![](figures/meta_simple_6.png)
+
+## Meta simple 7
 ![](figures/meta_simple_7.png)
 
 
