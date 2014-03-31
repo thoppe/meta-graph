@@ -1,15 +1,17 @@
-import sqlite3, logging, argparse, os, collections, ast
+import sqlite3, logging, argparse, os, collections
 import subprocess, itertools
 import numpy as np
-from src.helper_functions import load_graph_database, grab_vector
+from src.helper_functions import load_graph_database, grab_vector, grab_scalar
 from src.invariants import convert_to_numpy, graph_tool_representation
-import graph_tool
-import pyparsing as pypar
 
-desc   = "Verify the sequences produced are the correct ones"
+import graph_tool
+import graph_tool.topology
+
+desc   = "Create the simple edge meta-graph of order n"
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument('n',type=int,default=4,
-                    help="graph size n to compute meta")
+                    help="graph order")
+
 cargs = vars(parser.parse_args())
 n = cargs["n"]
 upper_idx = np.triu_indices(n)
@@ -19,6 +21,14 @@ logging.root.setLevel(logging.INFO)
 
 # Connect to the database
 conn = load_graph_database(cargs["n"])
+
+save_conn = sqlite3.connect("simple_meta.db")
+
+# Connect to the database
+with open("template_meta.sql") as FIN:
+    script = FIN.read()
+    save_conn.executescript(script)
+    save_conn.commit()
 
 
 def convert_edge_to_adj(A):
@@ -31,23 +41,8 @@ def convert_edge_to_adj(A):
 # Make a mapping of all the graph id's
 IDS = grab_vector(conn, '''SELECT graph_id FROM graph''')
 IDS = dict(zip(IDS,range(len(IDS))))
-Mn  = len(IDS)
-current_mark = len(IDS)-1
 
-from scipy.sparse import *
-M = dok_matrix((Mn,Mn), dtype=int)
 
-# Start with the complete graph
-KN = np.ones((n,n),dtype=int) - np.diag((1,)*n)
-
-# Find its adj representation
-#au = ''.join(map(str,KN[upper_idx]))
-#int_index = int(au,2)
-
-g = KN.copy()
-
-import graph_tool.topology
-import graph_tool.draw
 
 def iso_difference_in_set(g, graph_set):
 
@@ -77,8 +72,6 @@ def find_iso_set_from_cut(h):
 
 def find_iso_match(g, canidate_list):
 
-    print "CANIDATES!",canidate_list
-
     for idx,adj in canidate_list:
         h = graph_tool_representation(adj,**{"N":n})
         if graph_tool.topology.isomorphism(g,h):
@@ -86,52 +79,95 @@ def find_iso_match(g, canidate_list):
     
     raise ValueError("should find match already")
 
-
-cmd_find = '''
-SELECT graph_id,adj FROM graph WHERE special_degree_sequence=(?)'''
-
-
-cmd_grab_list = '''SELECT graph_id,adj FROM graph'''
-GRAPH_LIST = conn.execute(cmd_grab_list).fetchall()
-
-for current_mark, target_adj in GRAPH_LIST[::-1]:
+def compute_meta_edges(current_mark, target_adj):
 
     g = graph_tool_representation(target_adj,**{"N":n})   
     iso_set = find_iso_set_from_cut(g)
 
-    #graph_tool.draw.graphviz_draw(g,vcolor="blue")
-
     deg_set = [sorted([x.out_degree() for x in h.vertices()]) 
                for h in iso_set]
+
+    new_edges = []
 
     for h in iso_set:
 
         #graph_tool.draw.graphviz_draw(h,vcolor="red")
         deg = sorted([x.out_degree() for x in h.vertices()])
 
-        #print "degree seq", deg
-        
+        #print "degree seq", deg       
         s = str(deg).replace(' ','')
         items = conn.execute(cmd_find,(s,)).fetchall()
-        #print "checking match", deg
         match_mark = find_iso_match(h, items)
 
         i = IDS[current_mark]
         j = IDS[match_mark]
-        #print "found link", i,j, g+h
-        M[i,j] = 1
+
+        #print "found link", i,j
+        #M[i,j] = 1
+
+        new_edges.append( (n,i,j) )
+
+    return new_edges
+
+
+
+cmd_find = '''
+SELECT graph_id,adj FROM graph WHERE special_degree_sequence=(?)'''
+
+cmd_grab_list = '''SELECT graph_id,adj FROM graph'''
+GRAPH_LIST = conn.execute(cmd_grab_list).fetchall()
+
+cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?)'''
+
+cmd_check = '''SELECT e0 FROM metagraph WHERE meta_n={} AND e0={} LIMIT 1'''
+
+for current_mark, target_adj in GRAPH_LIST[::-1]:
+
+    i = IDS[current_mark]
+    check = save_conn.execute(cmd_check.format(n,i)).fetchone()
+
+    print "Starting meta_{}, edge {}".format(n,i)
+
+    if check == None:
+
+        new_edges = compute_meta_edges(current_mark, target_adj)
+        save_conn.executemany(cmd_insert, new_edges)
+
+    if i and i%100==0 :
+        save_conn.commit()
+        print "Commiting changes"
+
+save_conn.commit()
+
+
+from scipy.sparse import *
+import graph_tool.draw
+
+#Mn  = len(IDS)
+#print "N={}, total number of graphs={}".format(n, len(IDS))
+#M = dok_matrix((Mn,Mn), dtype=int)
+
+cmd_select = '''SELECT e0,e1 FROM metagraph WHERE meta_n={}'''
 
 m = graph_tool.Graph(directed=False)
-m.add_vertex(M.shape[0])
-for edge in M.keys():
-    m.add_edge(*edge)
+m.add_vertex(len(IDS))
+
+cursor = save_conn.execute(cmd_select.format(n))
+while cursor:
+    block = cursor.fetchmany(1000)
+    if not block: break
+    for edge in block:
+        m.add_edge(*edge)
 
 
-f_png = "meta_simple_{}.png".format(n)
+
+f_png = "figures/meta_simple_{}.png".format(n)
+logging.info("Saving %s"%f_png)
+
 graph_tool.draw.graphviz_draw(m,layout="dot",
                               output=f_png,
                               vsize=.4,penwidth=4,size=(30,30))
-print m
+
 
 
 
