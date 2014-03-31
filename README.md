@@ -28,4 +28,7 @@ As an example, consider M_4, illustrated to show the internal mappings
 ## Meta simple 7
 ![](figures/meta_simple_7.png)
 
+## Meta simple 8
+![](figures/meta_simple_8.png)
+
 
