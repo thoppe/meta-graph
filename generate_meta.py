@@ -102,7 +102,6 @@ def find_iso_set_from_cut(h):
     # find isomorphicly distinct set of edge removals
 
     iso_set = []
-    #invar.viz_graph(h)  
 
     for edge in h.edges():
 
@@ -110,18 +109,18 @@ def find_iso_set_from_cut(h):
         hx.remove_edge(edge)
         if iso_difference_in_set(hx, iso_set):
             iso_set.append(hx)
-            #invar.viz_graph(hx)
 
     return iso_set
 
 
 def find_iso_match(g, canidate_list):
 
+
     for h_id,h_adj in canidate_list:
         h = graph_tool_representation(h_adj,N=N)
         if graph_tool.topology.isomorphism(g,h):
             return h_id
-    
+
     raise ValueError("should find match already")
 
 
@@ -157,9 +156,7 @@ cmd_check_complete = '''SELECT meta_n FROM computed'''
 complete_n = grab_vector(save_conn,cmd_check_complete)
 
 def process_adj((i,target_adj)):
-    #check = save_conn.execute(cmd_check.format(N,i)).fetchone()
-    #new_edges = []
-    #if check == None:
+
     if i%1000==0:
         print "Starting meta_{}, edge {}".format(N,i)
     new_edges = compute_meta_edges(i,target_adj)
