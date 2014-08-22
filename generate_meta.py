@@ -2,21 +2,24 @@ import sqlite3, logging, argparse, os, collections
 import subprocess, itertools
 import numpy as np
 from src.helper_functions import load_graph_database, grab_vector, grab_scalar, grab_all
-from src.invariants import convert_to_numpy, graph_tool_representation,compress_input
+from src.invariants import convert_to_numpy, graph_tool_representation
 import src.invariants as invar
 
 import graph_tool
 import graph_tool.topology
 import graph_tool.spectral
 
-desc   = "Create the simple edge meta-graph of order n"
+desc   = "Creates the connected simple edge meta-graph of order N"
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument('N',type=int,default=4,
                     help="graph order")
 parser.add_argument('--draw', default=False, action='store_true')
+parser.add_argument('--clear', default=False, action='store_true',
+                    help="Clears this value from the database")
 
 cargs = vars(parser.parse_args())
 N = cargs["N"]
+
 upper_idx = np.triu_indices(N)
 
 # Start the logger
@@ -33,6 +36,20 @@ with open("template_meta.sql") as FIN:
     script = FIN.read()
     save_conn.executescript(script)
     save_conn.commit()
+
+
+if cargs["clear"]:
+    cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
+    logging.warning("Clearing metagraph values {}".format(N))
+    save_conn.execute(cmd_clear, (N,))
+    save_conn.commit()
+
+    save_conn.execute("VACUUM")
+    save_conn.commit()
+
+    cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
+    save_conn.execute(cmd_clear_complete, (N,))
+    exit()
 
 __upper_matrix_index = np.triu_indices(N)
 
@@ -152,15 +169,22 @@ def process_adj((i,target_adj)):
 import multiprocessing
 P = multiprocessing.Pool()
 
-if N not in complete_n:
+manager = multiprocessing.Manager()
+LD = manager.dict(LPOLY)
 
-    sol = P.imap(process_adj,ADJ.items())
+if N not in complete_n:
+    logging.info("Starting the computation for meta_{}".format(N))
+
+    #items = ((gid, adj,LD) for gid,adj in ADJ.items())
+    #for v in items:
+    #    print process_adj(v)
+    #exit()
+    items = ADJ.items()
+
+    sol = P.imap(process_adj,items,chunksize=5)
     for k,new_edges in enumerate(sol):
         save_conn.executemany(cmd_insert, new_edges)
 
-        #if k and k%100==0 :
-        #    save_conn.commit()
-        #    logging.info("Commiting changes for edge number {}".format(k))
 
 P.close()
 P.join()
