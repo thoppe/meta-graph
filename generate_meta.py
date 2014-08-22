@@ -124,6 +124,8 @@ def find_iso_match(g, canidate_list):
     raise ValueError("should find match already")
 
 
+
+
 def compute_meta_edges(i,target_adj):
 
     g = graph_tool_representation(target_adj,N=N)
@@ -132,11 +134,19 @@ def compute_meta_edges(i,target_adj):
     new_edges = []
     isomorphism_check_counter = []
 
+    HL = []
     for h in iso_set:
-
         hA = graph_tool.spectral.adjacency(h).toarray().astype(int)
         h_adj = convert_numpy_to_adj(hA)
         hL = invar.special_laplacian_polynomial(h_adj,N=N)
+        HL.append(hL)
+
+    return i, HL
+
+    '''
+        print hL
+        exit()
+
         items = [(k,ADJ[k]) for k in LPOLY[hL]]
 
         isomorphism_check_counter.append(len(items))
@@ -146,7 +156,7 @@ def compute_meta_edges(i,target_adj):
 
     #print " + number of isomorphism checks to complete", sum(isomorphism_check_counter)
     return new_edges
-
+    '''
 
 cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?)'''
 cmd_check  = '''SELECT e0 FROM metagraph WHERE meta_n={} AND e0={} LIMIT 1'''
@@ -161,6 +171,16 @@ def process_adj((i,target_adj)):
         print "Starting meta_{}, edge {}".format(N,i)
     new_edges = compute_meta_edges(i,target_adj)
     return new_edges
+
+for item in ADJ.items():
+    print "START:",item
+    i, HL =  compute_meta_edges(*item)
+    for lap_list in HL:
+
+        L_mapping = [(k,ADJ[k]) for k in LPOLY[lap_list]]
+        print "HERE", L_mapping
+
+exit()
 
 
 import multiprocessing
