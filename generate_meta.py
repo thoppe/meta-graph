@@ -1,7 +1,7 @@
 import sqlite3, logging, argparse, os, collections
 import subprocess, itertools
 import numpy as np
-from src.helper_functions import load_graph_database, grab_vector, grab_scalar, grab_all
+from src.helper_functions import load_graph_database, grab_vector, grab_all
 from src.invariants import convert_to_numpy, graph_tool_representation
 import src.invariants as invar
 
@@ -51,17 +51,6 @@ if cargs["clear"]:
     save_conn.execute(cmd_clear_complete, (N,))
     exit()
 
-__upper_matrix_index = np.triu_indices(N)
-
-def convert_numpy_to_adj(A):
-    # The string representation of the upper triangular adj matrix
-    au = ''.join(map(str, A[__upper_matrix_index]))
-
-    # Convert the binary string to an int
-    int_index = int(au, 2)
-
-    return int_index
-
 # Make a mapping of all the graph id's
 logging.info("Grabbing the graph adj information")
 ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
@@ -86,64 +75,102 @@ for gid in ADJ:
     L = tuple(grab_all(sconn, single_grab, (gid,)))   
     LPOLY[L].append(gid)
 
-def iso_difference_in_set(g, graph_set):
 
-    # Check if connected
-    if len(graph_tool.topology.label_components(g)[1]) > 1:
-        return False
+__upper_matrix_index = np.triu_indices(N)
 
-    for h in graph_set:
+def convert_numpy_to_adj(A):
+    # The string representation of the upper triangular adj matrix
+    au = ''.join(map(str, A[__upper_matrix_index]))
+
+    # Convert the binary string to an int
+    int_index = int(au, 2)
+
+    return int_index
+
+def is_connected(g):
+    component_size = graph_tool.topology.label_components(g)[1]
+    return len(component_size)==1
+
+def iso_difference_in_set(g, iso_set):
+    ''' Find an isomorphism in a list and return it, otherwise return True'''
+    for h in iso_set:
         if graph_tool.topology.isomorphism(g,h):
-            return False
-    return True
+            return False,h
+    return True,None
 
-def find_iso_set_from_cut(h):
-    # For every edge in the current graph
-    # find isomorphicly distinct set of edge removals
+def connected_cut_iterator(g):
+    ''' Iterates over all graphs with one less edge that are still connected '''
+    for edge in g.edges():
 
-    iso_set = []
+        gx = g.copy()
+        gx.remove_edge(edge)
 
-    for edge in h.edges():
+        # Check if connected
+        if is_connected(gx):
+            yield gx
+    
 
-        hx = h.copy()
-        hx.remove_edge(edge)
-        if iso_difference_in_set(hx, iso_set):
-            iso_set.append(hx)
+def find_iso_set_from_cut(g):
+    # For every edge in the current graph,
+    # find isomorphicly distinct set of edge removals and their cardinality
+
+    iso_set = collections.Counter()
+
+    for h in connected_cut_iterator(g):
+       
+        is_unique, h_iso = iso_difference_in_set(h, iso_set)
+        if is_unique: 
+            iso_set[h] += 1
+        else: 
+            iso_set[h_iso] += 1
 
     return iso_set
 
-
-def find_iso_match(g, canidate_list):
-
-
-    for h_id,h_adj in canidate_list:
-        h = graph_tool_representation(h_adj,N=N)
-        if graph_tool.topology.isomorphism(g,h):
-            return h_id
-
-    raise ValueError("should find match already")
-
-
-
-
-def compute_meta_edges(i,target_adj):
-
+def compute_valid_cuts(target_adj):
+    # Determine the valid iso_set and compute the invariant (Laplacian)
     g = graph_tool_representation(target_adj,N=N)
     iso_set = find_iso_set_from_cut(g)
-   
-    new_edges = []
-    isomorphism_check_counter = []
+
+    #laplacian_set = collections.Counter()
+    laplacian_map = dict()
 
     HL = []
     for h in iso_set:
-        hA = graph_tool.spectral.adjacency(h).toarray().astype(int)
-        h_adj = convert_numpy_to_adj(hA)
-        hL = invar.special_laplacian_polynomial(h_adj,N=N)
-        HL.append(hL)
+        A = graph_tool.spectral.adjacency(h)
+        laplacian_map[h] = invar.special_laplacian_polynomial(A,N=N)
 
-    return i, HL
+    return iso_set, laplacian_map
 
-    '''
+def possible_laplacian_match(L):
+    return [ (k,ADJ[k]) for k in  LPOLY[L]]
+
+def identify_match_from_adj(g, match_set):
+    # Sanity check here, remove comments for speed
+    #if len(match_set) == 1:
+    #    return match_set[0][0]
+
+    for idx,adj in match_set:
+        h = graph_tool_representation(adj,N=N)
+        if graph_tool.topology.isomorphism(g,h):
+            return idx
+
+    raise ValueError("should find match already")
+
+def record_meta_edge(e0,e1,weight):
+    print "metaedge_{}: {} * ({},{})".format(N,weight,e0,e1)
+
+for idx,adj in ADJ.items():
+
+    iso_set, L_MAP = compute_valid_cuts(adj)
+    for h,L in L_MAP.items():
+        match_set = possible_laplacian_match(L)
+        match_idx = identify_match_from_adj(h,match_set)
+        weight = iso_set[h]
+        record_meta_edge(idx,match_idx,weight)
+
+exit()
+
+'''
         print hL
         exit()
 
@@ -156,7 +183,10 @@ def compute_meta_edges(i,target_adj):
 
     #print " + number of isomorphism checks to complete", sum(isomorphism_check_counter)
     return new_edges
-    '''
+'''
+
+
+
 
 cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?)'''
 cmd_check  = '''SELECT e0 FROM metagraph WHERE meta_n={} AND e0={} LIMIT 1'''
@@ -172,13 +202,6 @@ def process_adj((i,target_adj)):
     new_edges = compute_meta_edges(i,target_adj)
     return new_edges
 
-for item in ADJ.items():
-    print "START:",item
-    i, HL =  compute_meta_edges(*item)
-    for lap_list in HL:
-
-        L_mapping = [(k,ADJ[k]) for k in LPOLY[lap_list]]
-        print "HERE", L_mapping
 
 exit()
 
