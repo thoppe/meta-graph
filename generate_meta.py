@@ -16,6 +16,8 @@ parser.add_argument('N',type=int,default=4,
 parser.add_argument('--draw', default=False, action='store_true')
 parser.add_argument('--clear', default=False, action='store_true',
                     help="Clears this value from the database")
+parser.add_argument('--force', default=False, action='store_true',
+                    help="Clears and starts computation")
 
 cargs = vars(parser.parse_args())
 N = cargs["N"]
@@ -38,7 +40,7 @@ with open("template_meta.sql") as FIN:
     meta_conn.commit()
 
 
-if cargs["clear"]:
+if cargs["clear"] or cargs["force"]:
     cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
     logging.warning("Clearing metagraph values {}".format(N))
     meta_conn.execute(cmd_clear, (N,))
@@ -49,7 +51,9 @@ if cargs["clear"]:
 
     cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
     meta_conn.execute(cmd_clear_complete, (N,))
-    exit()
+
+    if not cargs["force"]:
+        exit()
 
 cmd_check_complete = '''SELECT meta_n FROM computed'''
 complete_n = grab_vector(meta_conn,cmd_check_complete)
@@ -73,7 +77,11 @@ for gid in ADJ:
     L = tuple(grab_all(sconn, single_grab, (gid,)))   
     LPOLY[L].append(gid)
 
-assert(len(LPOLY) == len(ADJ))
+num_LPOLY = len(LPOLY)
+num_ADJ   = len(ADJ)
+if not num_LPOLY:
+    msg = "LPOLY database is empty"
+    raise ValueError(msg)
 
 
 __upper_matrix_index = np.triu_indices(N)
@@ -171,18 +179,19 @@ def record_E1_set((e0,E1_weights)):
     def edge_insert_itr():
         for e1 in E1_weights:
             yield (N,e0,e1,E1_weights[e1])
-    
+
+    logging.info("Computed e0 ({})".format(e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
     
-    
 
 
-ADJ_iter = ADJ.iteritems()
+logging.info("Starting edge remove computation")
+source = ADJ.iteritems()
 
 from multi_chain import multi_Manager
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
 SERIAL_TASKS = [process_lap_poly,record_E1_set]
-M = multi_Manager(ADJ_iter, MULTI_TASKS, SERIAL_TASKS)
+M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
 M.run()
 
 cmd_mark_complete = '''INSERT INTO computed VALUES (?)'''
@@ -191,72 +200,6 @@ meta_conn.commit()
 
 print "DONE?"
 exit()
-
-
-cmd_check  = '''SELECT e0 FROM metagraph WHERE meta_n={} AND e0={} LIMIT 1'''
-compute_size = len(ADJ)
-
-
-def process_adj((i,target_adj)):
-
-    if i%1000==0:
-        print "Starting meta_{}, edge {}".format(N,i)
-    new_edges = compute_meta_edges(i,target_adj)
-    return new_edges
-
-
-exit()
-
-
-import multiprocessing
-P = multiprocessing.Pool()
-
-manager = multiprocessing.Manager()
-LD = manager.dict(LPOLY)
-
-if N not in complete_n:
-    logging.info("Starting the computation for meta_{}".format(N))
-
-    #items = ((gid, adj,LD) for gid,adj in ADJ.items())
-    #for v in items:
-    #    print process_adj(v)
-    #exit()
-    items = ADJ.items()
-
-    sol = P.imap(process_adj,items,chunksize=5)
-    for k,new_edges in enumerate(sol):
-        meta_conn.executemany(cmd_insert, new_edges)
-
-
-P.close()
-P.join()
-    
-meta_conn.commit()
-cmd_mark_complete = '''INSERT INTO computed VALUES (?)'''
-meta_conn.execute(cmd_mark_complete, (N,))
-meta_conn.commit()
-
-if not cargs["draw"]:
-    exit()
-
-
-from scipy.sparse import *
-import graph_tool.draw
-
-print "Building graph-tool representation"
-
-cmd_select = '''SELECT e0,e1 FROM metagraph WHERE meta_n={}'''
-
-m = graph_tool.Graph(directed=False)
-m.add_vertex(len(ADJ))
-
-cursor = meta_conn.execute(cmd_select.format(N))
-while cursor:
-    block = cursor.fetchmany(1000)
-    if not block: break
-    for edge in block:
-        i,j = edge
-        m.add_edge(i-1,j-1)
 
 f_png = "figures/meta_simple_{}.png".format(N)
 logging.info("Saving %s"%f_png)
