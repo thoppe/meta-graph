@@ -2,7 +2,7 @@ import sqlite3, logging, argparse, os, collections
 import subprocess, itertools
 import numpy as np
 from src.helper_functions import load_graph_database, grab_vector, grab_all
-from src.invariants import convert_to_numpy, graph_tool_representation
+from src.invariants import graph_tool_representation
 import src.invariants as invar
 
 import graph_tool
@@ -29,63 +29,54 @@ logging.root.setLevel(logging.INFO)
 conn  = load_graph_database(N)
 sconn = load_graph_database(N,special=True)
 
-save_conn = sqlite3.connect("simple_meta.db")
+meta_conn = sqlite3.connect("simple_meta.db")
 
 # Connect to the database
 with open("template_meta.sql") as FIN:
     script = FIN.read()
-    save_conn.executescript(script)
-    save_conn.commit()
+    meta_conn.executescript(script)
+    meta_conn.commit()
 
 
 if cargs["clear"]:
     cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
     logging.warning("Clearing metagraph values {}".format(N))
-    save_conn.execute(cmd_clear, (N,))
-    save_conn.commit()
+    meta_conn.execute(cmd_clear, (N,))
+    meta_conn.commit()
 
-    save_conn.execute("VACUUM")
-    save_conn.commit()
+    meta_conn.execute("VACUUM")
+    meta_conn.commit()
 
     cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
-    save_conn.execute(cmd_clear_complete, (N,))
+    meta_conn.execute(cmd_clear_complete, (N,))
     exit()
 
+cmd_check_complete = '''SELECT meta_n FROM computed'''
+complete_n = grab_vector(meta_conn,cmd_check_complete)
+if N in complete_n:
+    msg = "meta {} has already been computed, exiting".format(N)
+    raise ValueError(msg)
+
+    
 # Make a mapping of all the graph id's
-logging.info("Grabbing the graph adj information")
+logging.info("Loading the graph adj information")
 ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
 
 # Grab all the Laplacian polynomials
-logging.info("Generating the Laplacian database")
+logging.info("Loading the Laplacian database")
 single_grab = '''
 SELECT x_degree,coeff FROM laplacian_polynomial
 WHERE graph_id = (?) ORDER BY x_degree,coeff'''
 LPOLY = collections.defaultdict(list)
 
-'''
-for gid,adj in ADJ.items():
-    g  = graph_tool_representation(adj,N=N)
-    gA = graph_tool.spectral.adjacency(g).toarray().astype(int)
-    gadj = convert_numpy_to_adj(gA)
-    invar.viz_graph(g)
-exit()
-'''
-
 for gid in ADJ:
     L = tuple(grab_all(sconn, single_grab, (gid,)))   
     LPOLY[L].append(gid)
 
+assert(len(LPOLY) == len(ADJ))
+
 
 __upper_matrix_index = np.triu_indices(N)
-
-def convert_numpy_to_adj(A):
-    # The string representation of the upper triangular adj matrix
-    au = ''.join(map(str, A[__upper_matrix_index]))
-
-    # Convert the binary string to an int
-    int_index = int(au, 2)
-
-    return int_index
 
 def is_connected(g):
     component_size = graph_tool.topology.label_components(g)[1]
@@ -126,7 +117,7 @@ def find_iso_set_from_cut(g):
 
     return iso_set
 
-def compute_valid_cuts(target_adj):
+def compute_valid_cuts((e0, target_adj)):
     # Determine the valid iso_set and compute the invariant (Laplacian)
     g = graph_tool_representation(target_adj,N=N)
     iso_set = find_iso_set_from_cut(g)
@@ -139,7 +130,7 @@ def compute_valid_cuts(target_adj):
         A = graph_tool.spectral.adjacency(h)
         laplacian_map[h] = invar.special_laplacian_polynomial(A,N=N)
 
-    return iso_set, laplacian_map
+    return e0, iso_set, laplacian_map
 
 def possible_laplacian_match(L):
     return [ (k,ADJ[k]) for k in  LPOLY[L]]
@@ -156,123 +147,55 @@ def identify_match_from_adj(g, match_set):
 
     raise ValueError("should find match already")
 
-def record_meta_edge(e0,e1,weight):
-    print "metaedge_{}: {} * ({},{})".format(N,weight,e0,e1)
+def process_lap_poly((e0, iso_set,L_MAP)):
 
-ADJ_iter = iter(ADJ.items())
+    L_GRAPH_MAP = {}
+    for h,L in L_MAP.iteritems():
+        match_set = possible_laplacian_match(L)
+        L_GRAPH_MAP[h] = match_set
+    return (e0, iso_set, L_GRAPH_MAP)
+
+def process_match_set((e0,iso_set,L_GRAPH_MAP)):
+
+    E1_weights = {}
+    for h,match_set in L_GRAPH_MAP.iteritems():
+        e1 = identify_match_from_adj(h,match_set)
+        E1_weights[e1] = iso_set[h] 
+        
+    return (e0,E1_weights)
+
+def record_E1_set((e0,E1_weights)):
+
+    cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?,?)'''
+
+    def edge_insert_itr():
+        for e1 in E1_weights:
+            yield (N,e0,e1,E1_weights[e1])
+    
+    meta_conn.executemany(cmd_insert, edge_insert_itr())
+    
+    
+
+
+ADJ_iter = ADJ.iteritems()
 
 from multi_chain import multi_Manager
+MULTI_TASKS  = [compute_valid_cuts,process_match_set]
+SERIAL_TASKS = [process_lap_poly,record_E1_set]
+M = multi_Manager(ADJ_iter, MULTI_TASKS, SERIAL_TASKS)
+M.run()
 
-M = multi_Manager()
+cmd_mark_complete = '''INSERT INTO computed VALUES (?)'''
+meta_conn.execute(cmd_mark_complete,(N,))
+meta_conn.commit()
 
-print ADJ_iter
+print "DONE?"
 exit()
 
 
-
-# Establish communication queues
-task_chains = 2
-TASKS   = [multiprocessing.Queue() for _ in range(task_chains)]
-RESULTS = [multiprocessing.Queue() for _ in range(task_chains)]
-
-# Start consumers
-num_consumers = 2#multiprocessing.cpu_count()
-print 'Creating %d consumers' % num_consumers
-CONSUMERS = [[Gentle_Consumer(t, r,RESULTS) for i in xrange(num_consumers)]
-             for t,r in zip(TASKS,RESULTS)]
-# Start the consumers
-for con_list in CONSUMERS:
-    for w in con_list:
-        w.start()
-
-#print "HI!"
-#exit()
-
-while True:
-    while not RESULTS[0].qsize():
-        (idx,adj) = ADJ_iter.next()
-        new_task = Task_compute_cuts((idx,adj))
-        TASKS[0].put( new_task )
-    
-        
-    print "READY FOR CONSUMPTION!"
-
-print "DONE"
-exit()
-
-max_queue_tasks = 1
-
-while True:
-    print "WAITING"
-    q1 = results_1.qsize()
-    q2 = results_2.qsize()
-    while not results_1.qsize() and tasks.qsize() < max_queue_tasks:
-        new_item = ADJ_iter.next()
-        new_task = Task_compute_cuts(new_item)
-        tasks.put( new_task )
-
-    while results_1.qsize():
-        iso_set, L_MAP = results_1.get()
-
-        for h,L in L_MAP.items():
-            match_set = possible_laplacian_match(L)
-
-            new_task = Task_identify_match_from_adj(h,match_set)
-            tasks.put( new_task)
-
-            print "RESULTS! ", h,L, match_idx
-            exit()
-
-#print results_1.get()
-#print results_1.get()
-exit()
-
-# Enqueue jobs
-tasks.put(Task_compute_cuts(ADJ_iter.next()))
-print "HERE!"
-exit()
-
-ADJ_iter = iter(ADJ.items())
-adj_q = multiprocessing.Queue()
-
-adj_q.put( ADJ_iter.next() )
-print adj_q.get()
-exit()
-
-for idx,adj in ADJ.items():
-    iso_set, L_MAP = compute_valid_cuts(adj)
-    for h,L in L_MAP.items():
-        match_set = possible_laplacian_match(L)
-        match_idx = identify_match_from_adj(h,match_set)
-        weight = iso_set[h]
-        record_meta_edge(idx,match_idx,weight)
-
-exit()
-
-'''
-        print hL
-        exit()
-
-        items = [(k,ADJ[k]) for k in LPOLY[hL]]
-
-        isomorphism_check_counter.append(len(items))
-        j = find_iso_match(h, items)
-
-        new_edges.append( (N,i,j) )
-
-    #print " + number of isomorphism checks to complete", sum(isomorphism_check_counter)
-    return new_edges
-'''
-
-
-
-
-cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?)'''
 cmd_check  = '''SELECT e0 FROM metagraph WHERE meta_n={} AND e0={} LIMIT 1'''
 compute_size = len(ADJ)
 
-cmd_check_complete = '''SELECT meta_n FROM computed'''
-complete_n = grab_vector(save_conn,cmd_check_complete)
 
 def process_adj((i,target_adj)):
 
@@ -302,16 +225,16 @@ if N not in complete_n:
 
     sol = P.imap(process_adj,items,chunksize=5)
     for k,new_edges in enumerate(sol):
-        save_conn.executemany(cmd_insert, new_edges)
+        meta_conn.executemany(cmd_insert, new_edges)
 
 
 P.close()
 P.join()
     
-save_conn.commit()
+meta_conn.commit()
 cmd_mark_complete = '''INSERT INTO computed VALUES (?)'''
-save_conn.execute(cmd_mark_complete, (N,))
-save_conn.commit()
+meta_conn.execute(cmd_mark_complete, (N,))
+meta_conn.commit()
 
 if not cargs["draw"]:
     exit()
@@ -327,7 +250,7 @@ cmd_select = '''SELECT e0,e1 FROM metagraph WHERE meta_n={}'''
 m = graph_tool.Graph(directed=False)
 m.add_vertex(len(ADJ))
 
-cursor = save_conn.execute(cmd_select.format(N))
+cursor = meta_conn.execute(cmd_select.format(N))
 while cursor:
     block = cursor.fetchmany(1000)
     if not block: break

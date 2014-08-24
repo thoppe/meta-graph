@@ -53,22 +53,26 @@ class multi_Manager(object):
                  chunksize=50, procs=None, cycle_sleep=0):
 
         self.chunksize = chunksize
-        self.procs = multiprocessing.cpu_count()
         self.cycle_sleep = cycle_sleep
 
+        if procs == None:
+            self.procs = multiprocessing.cpu_count()
+        else:
+            self.procs = procs
+            
         self.source = source
         self.func_T = TASK_CHAIN
         self.func_S = SERIAL_CHAIN
 
         k = len(TASK_CHAIN)
-
+        
         self.T_input  = [multiprocessing.Queue() for _ in range(k)]
         self.S_input  = [multiprocessing.Queue() for _ in range(k)]
         self.S_output = [multiprocessing.Queue() for _ in range(k)]
 
         self.all_Q = [self.T_input,self.S_input,self.S_output]
-
-        self.C = [[Consumer(t,q) for _ in range(procs)] 
+        
+        self.C = [[Consumer(t,q) for _ in range(self.procs)] 
                   for t,q in zip(self.T_input,self.S_input)]
 
         # Start consumers
