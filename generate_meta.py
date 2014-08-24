@@ -159,8 +159,87 @@ def identify_match_from_adj(g, match_set):
 def record_meta_edge(e0,e1,weight):
     print "metaedge_{}: {} * ({},{})".format(N,weight,e0,e1)
 
-for idx,adj in ADJ.items():
+ADJ_iter = iter(ADJ.items())
 
+from multi_chain import multi_Manager
+
+M = multi_Manager()
+
+print ADJ_iter
+exit()
+
+
+
+# Establish communication queues
+task_chains = 2
+TASKS   = [multiprocessing.Queue() for _ in range(task_chains)]
+RESULTS = [multiprocessing.Queue() for _ in range(task_chains)]
+
+# Start consumers
+num_consumers = 2#multiprocessing.cpu_count()
+print 'Creating %d consumers' % num_consumers
+CONSUMERS = [[Gentle_Consumer(t, r,RESULTS) for i in xrange(num_consumers)]
+             for t,r in zip(TASKS,RESULTS)]
+# Start the consumers
+for con_list in CONSUMERS:
+    for w in con_list:
+        w.start()
+
+#print "HI!"
+#exit()
+
+while True:
+    while not RESULTS[0].qsize():
+        (idx,adj) = ADJ_iter.next()
+        new_task = Task_compute_cuts((idx,adj))
+        TASKS[0].put( new_task )
+    
+        
+    print "READY FOR CONSUMPTION!"
+
+print "DONE"
+exit()
+
+max_queue_tasks = 1
+
+while True:
+    print "WAITING"
+    q1 = results_1.qsize()
+    q2 = results_2.qsize()
+    while not results_1.qsize() and tasks.qsize() < max_queue_tasks:
+        new_item = ADJ_iter.next()
+        new_task = Task_compute_cuts(new_item)
+        tasks.put( new_task )
+
+    while results_1.qsize():
+        iso_set, L_MAP = results_1.get()
+
+        for h,L in L_MAP.items():
+            match_set = possible_laplacian_match(L)
+
+            new_task = Task_identify_match_from_adj(h,match_set)
+            tasks.put( new_task)
+
+            print "RESULTS! ", h,L, match_idx
+            exit()
+
+#print results_1.get()
+#print results_1.get()
+exit()
+
+# Enqueue jobs
+tasks.put(Task_compute_cuts(ADJ_iter.next()))
+print "HERE!"
+exit()
+
+ADJ_iter = iter(ADJ.items())
+adj_q = multiprocessing.Queue()
+
+adj_q.put( ADJ_iter.next() )
+print adj_q.get()
+exit()
+
+for idx,adj in ADJ.items():
     iso_set, L_MAP = compute_valid_cuts(adj)
     for h,L in L_MAP.items():
         match_set = possible_laplacian_match(L)
