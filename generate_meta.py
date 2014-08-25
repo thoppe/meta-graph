@@ -1,13 +1,14 @@
 import sqlite3, logging, argparse, os, collections
 import subprocess, itertools
 import numpy as np
-from src.helper_functions import load_graph_database, grab_vector, grab_all
-from src.invariants import graph_tool_representation
-import src.invariants as invar
 
 import graph_tool
 import graph_tool.topology
 import graph_tool.spectral
+
+from src.helper_functions import load_graph_database, grab_vector, grab_all
+from src.invariants import graph_tool_representation
+import src.invariants as invar
 
 desc   = "Creates the connected simple edge meta-graph of order N"
 parser = argparse.ArgumentParser(description=desc)
@@ -83,9 +84,6 @@ if not num_LPOLY:
     msg = "LPOLY database is empty"
     raise ValueError(msg)
 
-
-__upper_matrix_index = np.triu_indices(N)
-
 def is_connected(g):
     component_size = graph_tool.topology.label_components(g)[1]
     return len(component_size)==1
@@ -125,21 +123,6 @@ def find_iso_set_from_cut(g):
 
     return iso_set
 
-def compute_valid_cuts((e0, target_adj)):
-    # Determine the valid iso_set and compute the invariant (Laplacian)
-    g = graph_tool_representation(target_adj,N=N)
-    iso_set = find_iso_set_from_cut(g)
-
-    #laplacian_set = collections.Counter()
-    laplacian_map = dict()
-
-    HL = []
-    for h in iso_set:
-        A = graph_tool.spectral.adjacency(h)
-        laplacian_map[h] = invar.special_laplacian_polynomial(A,N=N)
-
-    return e0, iso_set, laplacian_map
-
 def possible_laplacian_match(L):
     return [ (k,ADJ[k]) for k in  LPOLY[L]]
 
@@ -155,26 +138,46 @@ def identify_match_from_adj(g, match_set):
 
     raise ValueError("should find match already")
 
-def process_lap_poly((e0, iso_set,L_MAP)):
+def compute_valid_cuts( item ):
+    e0, target_adj = item
+
+    # Determine the valid iso_set and compute the invariant (Laplacian)
+    g = graph_tool_representation(target_adj,N=N)
+    iso_set = find_iso_set_from_cut(g)
+
+    #laplacian_set = collections.Counter()
+    laplacian_map = dict()
+
+    HL = []
+    for h in iso_set:
+        A = graph_tool.spectral.adjacency(h)
+        laplacian_map[h] = invar.special_laplacian_polynomial(A,N=N)
+
+    return e0, iso_set, laplacian_map
+
+def process_lap_poly(item):
+    e0, iso_set,L_MAP = item
 
     L_GRAPH_MAP = {}
-    for h,L in L_MAP.iteritems():
+    for h,L in L_MAP.items():
         match_set = possible_laplacian_match(L)
         L_GRAPH_MAP[h] = match_set
     return (e0, iso_set, L_GRAPH_MAP)
 
-def process_match_set((e0,iso_set,L_GRAPH_MAP)):
+def process_match_set(item):
+    e0,iso_set,L_GRAPH_MAP = item
 
     E1_weights = {}
-    for h,match_set in L_GRAPH_MAP.iteritems():
+    for h,match_set in L_GRAPH_MAP.items():
         e1 = identify_match_from_adj(h,match_set)
         E1_weights[e1] = iso_set[h] 
         
     return (e0,E1_weights)
 
-def record_E1_set((e0,E1_weights)):
+def record_E1_set(item):
+    e0,E1_weights = item
 
-    cmd_insert = '''INSERT INTO metagraph VALUES (?,?,?,?)'''
+    cmd_insert = "INSERT INTO metagraph VALUES (?,?,?,?)"
 
     def edge_insert_itr():
         for e1 in E1_weights:
@@ -186,7 +189,12 @@ def record_E1_set((e0,E1_weights)):
 
 
 logging.info("Starting edge remove computation")
-source = ADJ.iteritems()
+source = iter(ADJ.items())
+
+#for item in source:
+#    z = process_lap_poly((compute_valid_cuts(item)))
+#    w = record_E1_set(process_match_set(z))
+
 
 from multi_chain import multi_Manager
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
@@ -194,28 +202,26 @@ SERIAL_TASKS = [process_lap_poly,record_E1_set]
 M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
 M.run()
 
-cmd_mark_complete = '''INSERT INTO computed VALUES (?)'''
+cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete,(N,))
 meta_conn.commit()
 
-print "DONE?"
+print ("DONE?")
 exit()
+'''
 
+'''
 f_png = "figures/meta_simple_{}.png".format(N)
 logging.info("Saving %s"%f_png)
 
-print "Saving"
+print ("Saving")
 f_save = "reps/meta_{}.gml".format(N)
 m.save(f_save)
 
-print "Drawing"
+print ("Drawing")
 graph_tool.draw.graphviz_draw(m,layout="dot",
                               output=f_png,
                               vsize=.4,penwidth=4,size=(30,30))
 
 #import pylab as plt
 #plt.show()
-
-
-
-

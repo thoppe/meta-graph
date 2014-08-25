@@ -29,7 +29,7 @@ class Consumer(multiprocessing.Process):
             try:
                 result = next_task()
             except Exception:
-                print traceback.format_exc()
+                print (traceback.format_exc())
                 exit()
 
             #print "{} responded with {}".format(proc_name, result)
@@ -59,19 +59,19 @@ class multi_Manager(object):
             self.procs = multiprocessing.cpu_count()
         else:
             self.procs = procs
-            
+
         self.source = source
         self.func_T = TASK_CHAIN
         self.func_S = SERIAL_CHAIN
 
         k = len(TASK_CHAIN)
-        
+
         self.T_input  = [multiprocessing.Queue() for _ in range(k)]
         self.S_input  = [multiprocessing.Queue() for _ in range(k)]
         self.S_output = [multiprocessing.Queue() for _ in range(k)]
 
         self.all_Q = [self.T_input,self.S_input,self.S_output]
-        
+
         self.C = [[Consumer(t,q) for _ in range(self.procs)] 
                   for t,q in zip(self.T_input,self.S_input)]
 
@@ -110,7 +110,7 @@ class multi_Manager(object):
 
     def pull_source(self):
         try:
-            return self.source.next()
+            return next(self.source)
         except StopIteration:
             self._empty_source = True
             return None
@@ -156,7 +156,7 @@ class multi_Manager(object):
                 if not free: return False
 
         # Pull from the source if still here
-        for n in xrange(free):
+        for n in range(free):
             val = self.pull_source()
             task = Generic_Task(self.func_T[0], val)
             if self._empty_source:
@@ -169,28 +169,31 @@ class multi_Manager(object):
             self.shutdown()
 
 
+# These test methods have to be global to work with 'spawn' method!
+
+def serial_a(x):
+    print ("A result: ", x)
+    return x
+
+def serial_b(x):
+    print ("B result: ", x)
+    return x
+
+def mul2(x):
+    return x**2**2
+
+def sub3(x):
+    return x-3
+
 if __name__ == "__main__":
 
+    multiprocessing.set_start_method('spawn')
 
-    def serial_a(x):
-        print "A result: ", x
-        return x
-
-    def serial_b(x):
-        print "B result: ", x
-        return x
-
-    def mul2(x):
-        return x**2**2
-
-    def sub3(x):
-        return x-3
-
-    source = iter(xrange(10**3))
+    source = iter(range(10**3))
 
     M = multi_Manager(source, [mul2,sub3], [serial_a, serial_b], 
                       chunksize=10,
                       procs=4)
     M.run()
 
-    print "Finished gracefully!"
+    print ("Finished gracefully!")
