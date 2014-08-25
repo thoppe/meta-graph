@@ -20,69 +20,6 @@ parser.add_argument('--clear', default=False, action='store_true',
 parser.add_argument('--force', default=False, action='store_true',
                     help="Clears and starts computation")
 
-cargs = vars(parser.parse_args())
-N = cargs["N"]
-
-upper_idx = np.triu_indices(N)
-
-# Start the logger
-logging.root.setLevel(logging.INFO)
-
-# Connect to the database
-conn  = load_graph_database(N)
-sconn = load_graph_database(N,special=True)
-
-meta_conn = sqlite3.connect("simple_meta.db")
-
-# Connect to the database
-with open("template_meta.sql") as FIN:
-    script = FIN.read()
-    meta_conn.executescript(script)
-    meta_conn.commit()
-
-
-if cargs["clear"] or cargs["force"]:
-    cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
-    logging.warning("Clearing metagraph values {}".format(N))
-    meta_conn.execute(cmd_clear, (N,))
-    meta_conn.commit()
-
-    meta_conn.execute("VACUUM")
-    meta_conn.commit()
-
-    cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
-    meta_conn.execute(cmd_clear_complete, (N,))
-
-    if not cargs["force"]:
-        exit()
-
-cmd_check_complete = '''SELECT meta_n FROM computed'''
-complete_n = grab_vector(meta_conn,cmd_check_complete)
-if N in complete_n:
-    msg = "meta {} has already been computed, exiting".format(N)
-    raise ValueError(msg)
-
-    
-# Make a mapping of all the graph id's
-logging.info("Loading the graph adj information")
-ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
-
-# Grab all the Laplacian polynomials
-logging.info("Loading the Laplacian database")
-single_grab = '''
-SELECT x_degree,coeff FROM laplacian_polynomial
-WHERE graph_id = (?) ORDER BY x_degree,coeff'''
-LPOLY = collections.defaultdict(list)
-
-for gid in ADJ:
-    L = tuple(grab_all(sconn, single_grab, (gid,)))   
-    LPOLY[L].append(gid)
-
-num_LPOLY = len(LPOLY)
-num_ADJ   = len(ADJ)
-if not num_LPOLY:
-    msg = "LPOLY database is empty"
-    raise ValueError(msg)
 
 def is_connected(g):
     component_size = graph_tool.topology.label_components(g)[1]
@@ -185,21 +122,79 @@ def record_E1_set(item):
 
     logging.info("Computed e0 ({})".format(e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
+
+
+
+cargs = vars(parser.parse_args())
+N = cargs["N"]
+
+# Start the logger
+logging.root.setLevel(logging.INFO)
+
+# Connect to the database
+conn  = load_graph_database(N)
+sconn = load_graph_database(N,special=True)
+
+meta_conn = sqlite3.connect("simple_meta.db")
+
+# Connect to the database
+with open("template_meta.sql") as FIN:
+    script = FIN.read()
+    meta_conn.executescript(script)
+    meta_conn.commit()
+
+
+if cargs["clear"] or cargs["force"]:
+    cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
+    logging.warning("Clearing metagraph values {}".format(N))
+    meta_conn.execute(cmd_clear, (N,))
+    meta_conn.commit()
+
+    meta_conn.execute("VACUUM")
+    meta_conn.commit()
+
+    cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
+    meta_conn.execute(cmd_clear_complete, (N,))
+
+    if not cargs["force"]:
+        exit()
+
+cmd_check_complete = '''SELECT meta_n FROM computed'''
+complete_n = grab_vector(meta_conn,cmd_check_complete)
+if N in complete_n:
+    msg = "meta {} has already been computed, exiting".format(N)
+    raise ValueError(msg)
+
     
+# Make a mapping of all the graph id's
+logging.info("Loading the graph adj information")
+ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
 
-
-logging.info("Starting edge remove computation")
-source = iter(ADJ.items())
-
-#for item in source:
-#    z = process_lap_poly((compute_valid_cuts(item)))
-#    w = record_E1_set(process_match_set(z))
-
-
+# Building the multichain process
 from multi_chain import multi_Manager
+source = iter(ADJ.items())
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
 SERIAL_TASKS = [process_lap_poly,record_E1_set]
 M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
+
+# Grab all the Laplacian polynomials
+logging.info("Loading the Laplacian database")
+single_grab = '''
+SELECT x_degree,coeff FROM laplacian_polynomial
+WHERE graph_id = (?) ORDER BY x_degree,coeff'''
+LPOLY = collections.defaultdict(list)
+
+for gid in ADJ:
+    L = tuple(grab_all(sconn, single_grab, (gid,)))   
+    LPOLY[L].append(gid)
+
+num_LPOLY = len(LPOLY)
+num_ADJ   = len(ADJ)
+if not num_LPOLY:
+    msg = "LPOLY database is empty"
+    raise ValueError(msg)
+
+logging.info("Starting edge remove computation")
 M.run()
 
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"

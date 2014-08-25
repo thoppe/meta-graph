@@ -4,13 +4,13 @@ all:
 view:
 	sqlitebrowser simple_meta.db
 
-max_n = 9
+max_n = 7
 possible_N_values = $(shell seq 1 ${max_n})
 
 build:
 	$(foreach n,$(possible_N_values),python generate_meta.py $(n);)
 
-max_n_draw = 8
+max_n_draw = 7
 possible_N_draw = $(shell seq 1 ${max_n_draw})
 
 draw:

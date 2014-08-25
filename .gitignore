@@ -1,3 +1,6 @@
+# Pictures
+figures/*
+
 # Ignore the database files
 *.db
 
