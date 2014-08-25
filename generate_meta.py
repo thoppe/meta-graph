@@ -142,7 +142,7 @@ source = select_itr(conn,cmd_grab)
 from multi_chain import multi_Manager
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
 SERIAL_TASKS = [process_lap_poly,record_E1_set]
-M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
+M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS, procs=1,chunksize=1)
 
 # Connect to the meta database and template it if needed
 meta_conn = sqlite3.connect("simple_meta.db")
