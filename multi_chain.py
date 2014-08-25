@@ -110,17 +110,25 @@ class multi_Manager(object):
 
     def pull_source(self):
         try:
-            return next(self.source)
+            val = next(self.source)
+            return val
         except StopIteration:
             self._empty_source = True
             return None
 
     def shutdown(self):
+
         # Once complete join all processes and mark completed
-        for QX in [self.T_input,self.S_output]:
+        for QX in self.all_Q:
             for Q in QX:
                 for _ in range(self.procs):
                     Q.put(PoisonPill())
+
+                Q.close()
+                Q.join_thread()
+
+        for c in self.consumer_iter():
+            c.join()
 
         self._is_complete = True
     
@@ -187,7 +195,7 @@ def sub3(x):
 
 if __name__ == "__main__":
 
-    multiprocessing.set_start_method('spawn')
+    #multiprocessing.set_start_method('spawn')
 
     source = iter(range(10**3))
 

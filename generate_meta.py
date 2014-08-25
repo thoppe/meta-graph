@@ -6,7 +6,7 @@ import graph_tool
 import graph_tool.topology
 import graph_tool.spectral
 
-from src.helper_functions import load_graph_database, grab_vector, grab_all
+from src.helper_functions import load_graph_database, grab_vector, grab_all, select_itr
 from src.invariants import graph_tool_representation
 import src.invariants as invar
 
@@ -112,6 +112,7 @@ def process_match_set(item):
     return (e0,E1_weights)
 
 def record_E1_set(item):
+
     e0,E1_weights = item
 
     cmd_insert = "INSERT INTO metagraph VALUES (?,?,?,?)"
@@ -123,8 +124,6 @@ def record_E1_set(item):
     logging.info("Computed e0 ({})".format(e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
 
-
-
 cargs = vars(parser.parse_args())
 N = cargs["N"]
 
@@ -135,15 +134,24 @@ logging.root.setLevel(logging.INFO)
 conn  = load_graph_database(N)
 sconn = load_graph_database(N,special=True)
 
-meta_conn = sqlite3.connect("simple_meta.db")
+# Build the source generator, tuple of (graph_id, adj)
+cmd_grab = '''SELECT graph_id,adj FROM graph'''
+source = select_itr(conn,cmd_grab)
 
-# Connect to the database
+# Build the multichain process early while nothing is allocated
+from multi_chain import multi_Manager
+MULTI_TASKS  = [compute_valid_cuts,process_match_set]
+SERIAL_TASKS = [process_lap_poly,record_E1_set]
+M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
+
+# Connect to the meta database and template it if needed
+meta_conn = sqlite3.connect("simple_meta.db")
 with open("template_meta.sql") as FIN:
     script = FIN.read()
     meta_conn.executescript(script)
     meta_conn.commit()
 
-
+# Process the clear and force command line arguments
 if cargs["clear"] or cargs["force"]:
     cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
     logging.warning("Clearing metagraph values {}".format(N))
@@ -159,23 +167,16 @@ if cargs["clear"] or cargs["force"]:
     if not cargs["force"]:
         exit()
 
+# Check if values have been computed, if so, exit early
 cmd_check_complete = '''SELECT meta_n FROM computed'''
 complete_n = grab_vector(meta_conn,cmd_check_complete)
 if N in complete_n:
     msg = "meta {} has already been computed, exiting".format(N)
     raise ValueError(msg)
-
     
 # Make a mapping of all the graph id's
 logging.info("Loading the graph adj information")
 ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
-
-# Building the multichain process
-from multi_chain import multi_Manager
-source = iter(ADJ.items())
-MULTI_TASKS  = [compute_valid_cuts,process_match_set]
-SERIAL_TASKS = [process_lap_poly,record_E1_set]
-M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS)
 
 # Grab all the Laplacian polynomials
 logging.info("Loading the Laplacian database")
@@ -194,6 +195,11 @@ if not num_LPOLY:
     msg = "LPOLY database is empty"
     raise ValueError(msg)
 
+if not num_ADJ:
+    msg = "ADJ database is empty"
+    raise ValueError(msg)
+
+
 logging.info("Starting edge remove computation")
 M.run()
 
@@ -201,7 +207,11 @@ cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete,(N,))
 meta_conn.commit()
 
-print ("DONE?")
+# Sanity check on the number of rows
+cmd_rows = "SELECT e0 FROM metagraph WHERE meta_n={}".format(N)
+E0_rows = set( grab_vector(meta_conn,cmd_rows) )
+print "Missing rows: ", set(ADJ.keys()).difference(E0_rows)
+
 exit()
 '''
 
