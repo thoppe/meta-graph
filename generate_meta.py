@@ -108,20 +108,26 @@ def process_match_set(item):
     for h,match_set in L_GRAPH_MAP.items():
         e1 = identify_match_from_adj(h,match_set)
         E1_weights[e1] = iso_set[h] 
-        
+
     return (e0,E1_weights)
 
 def record_E1_set(item):
 
     e0,E1_weights = item
 
-    cmd_insert = "INSERT INTO metagraph VALUES (?,?,?,?)"
+    cmd_insert = '''
+    INSERT INTO metagraph 
+    (meta_n,e0,e1,weight)
+    VALUES (?,?,?,?)
+    '''
 
     def edge_insert_itr():
         for e1 in E1_weights:
             yield (N,e0,e1,E1_weights[e1])
 
     logging.info("Computed e0 ({})".format(e0))
+    print list(edge_insert_itr())
+
     meta_conn.executemany(cmd_insert, edge_insert_itr())
 
 cargs = vars(parser.parse_args())
@@ -143,6 +149,7 @@ from multi_chain import multi_Manager
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
 SERIAL_TASKS = [process_lap_poly,record_E1_set]
 M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS, procs=1,chunksize=1)
+#print [x for x in select_itr(conn,cmd_grab)]
 
 # Connect to the meta database and template it if needed
 meta_conn = sqlite3.connect("simple_meta.db")
@@ -203,6 +210,28 @@ if not num_ADJ:
 logging.info("Starting edge remove computation")
 M.run()
 
+print M.get_qsize()
+exit()
+
+'''
+exit()
+#MULTI_TASKS  = [compute_valid_cuts,process_match_set]
+#SERIAL_TASKS = [process_lap_poly,record_E1_set]
+#M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS, procs=1,chunksize=1)
+
+for item in source:
+    
+    print item
+    #print compute_valid_cuts(item)
+    #print process_lap_poly(compute_valid_cuts(item))
+    print process_match_set(process_lap_poly(compute_valid_cuts(item)))
+    record_E1_set(process_match_set(process_lap_poly(compute_valid_cuts(item))))
+    print
+
+M.shutdown()
+exit()
+'''
+
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete,(N,))
 meta_conn.commit()
@@ -210,6 +239,9 @@ meta_conn.commit()
 # Sanity check on the number of rows
 cmd_rows = "SELECT e0 FROM metagraph WHERE meta_n={}".format(N)
 E0_rows = set( grab_vector(meta_conn,cmd_rows) )
+
+select_itr(conn,cmd_grab)
+ 
 print "Missing rows: ", set(ADJ.keys()).difference(E0_rows)
 
 exit()

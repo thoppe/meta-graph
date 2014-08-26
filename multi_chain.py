@@ -2,7 +2,7 @@ import multiprocessing, time, traceback, logging
 
 logger = logging.getLogger()
 logging.basicConfig()
-logger.setLevel(logging.DEBUG)
+#logger.setLevel(logging.DEBUG)
 
 # Generic object that stops Consumers
 class PoisonPill(object):  
