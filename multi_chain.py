@@ -21,11 +21,9 @@ class Consumer(multiprocessing.Process):
     def run(self):
         proc_name = self.name
         while True:
-            #logger.debug("{} is waiting".format(proc_name))
+            logger.debug("{} is waiting".format(proc_name))
             next_task = self.task_queue.get()
             logger.debug("{} has got {}".format(proc_name, next_task))
-            #logger.debug("{} Poison status: {}".format(proc_name,
-            #                                    self.ate_poison(next_task)))
 
             if self.ate_poison(next_task):
                 return
@@ -37,6 +35,7 @@ class Consumer(multiprocessing.Process):
                 exit()
 
             logger.debug( "{} responded with {}".format(proc_name, result) )
+
             self.result_queue.put(result)
 
         return
@@ -58,6 +57,8 @@ class multi_Manager(object):
 
         self.chunksize = chunksize
         self.cycle_sleep = cycle_sleep
+        self.task_n = len(TASK_CHAIN)
+        self.task_range = range(self.task_n)
 
         if procs == None:
             self.procs = multiprocessing.cpu_count()
@@ -70,36 +71,26 @@ class multi_Manager(object):
 
         assert(len(TASK_CHAIN) == len(SERIAL_CHAIN))
 
-        k = len(TASK_CHAIN)
-
-        self.T_input  = [multiprocessing.Queue() for _ in range(k)]
-        self.S_input  = [multiprocessing.Queue() for _ in range(k)]
-        self.S_output = [multiprocessing.Queue() for _ in range(k)]
+        JQ = multiprocessing.JoinableQueue
+        RQ = multiprocessing.Queue
+        self.T_input  = [JQ() for _ in self.task_range]
+        self.S_input  = [RQ() for _ in self.task_range]
+        self.S_output = [RQ() for _ in self.task_range]
 
         self.all_Q = [self.T_input,self.S_input,self.S_output]
 
         self.C = [[Consumer(t,q) for _ in range(self.procs)] 
                   for t,q in zip(self.T_input,self.S_input)]
 
-        self.queue_T_input_closed  = [0 for _ in xrange(k)]
-        self.queue_S_input_closed  = [0 for _ in xrange(k)]
-        self.queue_S_output_closed = [0 for _ in xrange(k)]
-
         # Start consumers
         for c in self.consumer_iter():
             c.start()
 
-        #class is_consumer_level_alive:
-        #    def __init__(self, level):
-        #        self.level = level
-        #    def __call__(self):
-        #        for c in C[level]:
-        #            if not c.is_alive():
-        #                return False
-        #    return True
-
         self._empty_source = False
         self._is_complete  = False
+
+        self.shutdown_level = 0
+        self.shutdown_intra_level = 0
 
         # This is the order things get shutdown
         # the inital input is always mapped to the source
@@ -107,7 +98,7 @@ class multi_Manager(object):
         #self.close_mapping = {self.T_input[0] : (lambda x: self._empty_source)}
         #for k,TX in enumerate(self.T_input):
         #    if k>0:
-        #        self.close_mapping[TX] = is_consumer_level_alive(k)
+        #        self.close_mapping[TX] = is_consumer_level_alive(task_n)
         #print self.close_mapping
         #exit()
         
@@ -125,15 +116,28 @@ class multi_Manager(object):
     def is_complete(self): 
         return self._is_complete
     
-    def process_serial(self):
-        for consumers, S_in,S_out,f in zip(self.C,
-                                           self.S_input, 
-                                           self.S_output, 
-                                           self.func_S):
-            while S_in.qsize():
-                val    = S_in.get()
+    def process_serial(self, k):
+        consumers = self.C[k]
+        S_in = self.S_input[k]
+        S_out = self.S_output[k]
+        f = self.func_S[k]
+
+        print "PROCESS SERIAL", k, S_in.qsize(), consumers[0].is_alive()
+
+        while S_in.qsize():
+            val    = S_in.get()
+            if not type(val)==PoisonPill:
                 result = f(val)
                 S_out.put(result)
+            else:
+                S_out.put(val)
+        #else:
+        #    print "HERE!"
+        #    exit()
+
+    def process_final_serial(self):
+        while not self.S_output[-1].empty():
+            x = self.S_output[-1].get()
 
     def count_free_slots(self):
         free = self.chunksize
@@ -149,40 +153,102 @@ class multi_Manager(object):
             self._empty_source   = True
             return None
 
-    def _close_queue(self, Q):
+    def _poison_queue(self, Q):
         for _ in range(self.procs):
             Q.put(PoisonPill())
-        Q.close()
-        Q.join_thread()       
+        #Q.close()
+        #Q.join_thread()       
 
-    def shutdown(self):
-        print "SHUTDOWN *****************"
-        for k in xrange(len(self.T_input)):
-            print "IS ALIVE?", self.C[k][0].is_alive()
-            if self.C[k][0].is_alive():
+    def get_qsize(self):
+        return [[Q.qsize() for Q in QX] for QX in self.all_Q]
 
-                logger.debug( "Empty status: %s" % [[Q.qsize() for Q in QX] for QX in self.all_Q] )
-                self._close_queue( self.T_input[k]) 
-                self._close_queue( self.S_input[k] )
-                self._close_queue( self.S_output[k] )
-                logger.debug( "Empty status: %s" % [[Q.qsize() for Q in QX] for QX in self.all_Q] )
-                for c in self.C[k]:
-                    c.join()
+    def load_queue(self, k, free_tasks=10**8):
+        # Step through queues backwards
+        # ignore first T and last S
+        print "SDJFJ"
 
-                print "BREAKING!"
-                return False
+        consumers = self.C[k]
+        S_out = self.S_output[k]
+        T_in = self.T_input[k+1]
+        f     = self.func_T[k+1]
 
-                    
-            logger.debug( "Empty status: %s" % [[Q.qsize() for Q in QX] for QX in self.all_Q] )
-        print "SHUTDOWN COMPLETE *************"
-        self._is_complete = True
+        while not S_out.empty():
+            val  = S_out.get()
+            if type(val) != PoisonPill:
+                task = Generic_Task(f, val)
+                T_in.put(task)
+            #else:
+            #    T_in.put(val)
+            free_tasks -= 1
+            if not free_tasks: return False
+
         return True
+
+            
+    def shutdown(self):
+
+        level = self.shutdown_level
+        intra_level = self.shutdown_intra_level
+
+        print "SHUTDOWN *****************", level, intra_level, self.task_n
+
+
+        if level == self.task_n-1 and intra_level==1:
+            print "SHUTDOWN COMPLETE *************"
+
+            Q1  = self.all_Q[1][level]
+            self._poison_queue(Q1)
+
+            Q2  = self.all_Q[2][level]
+            self._poison_queue(Q2)
+            
+            #self.process_serial(level)
+            #self._poison_queue(Q)
+            print "CHECK:", self.S_output[level].qsize()
+            exit()
+            self.is_complete = True
+            return True
+
+        if intra_level == 0:
+            logger.debug("Check status: %s" % self.get_qsize()) 
+            print "Shuting down level", level, intra_level
+
+            Q  = self.all_Q[0][level]
+            self._poison_queue(Q)
+            self.process_serial(level)
+
+            #Q.close()
+            #Q.join_thread()
+
+            self.shutdown_intra_level += 1
+            
+            logger.debug("Check status: %s" % self.get_qsize())        
+
+        if intra_level == 1:
+            logger.debug("Check status: %s" % self.get_qsize())        
+            print "Shuting down level", level, intra_level
+
+            Q1  = self.all_Q[1][level]
+            self._poison_queue(Q1)
+            self.process_serial(level)
+
+            Q2  = self.all_Q[2][level]
+            self._poison_queue(Q2)
+            self.load_queue(level)
+
+            print "CHECK:", self.S_output[level].qsize()
+
+            self.shutdown_intra_level = 0
+            self.shutdown_level += 1
+
+        return False
+
     
     def is_empty(self):
         ''' Check if all queues are empty, including source '''
         if not self._empty_source: return False
 
-        logger.debug( "Empty status: %s" % [[Q.qsize() for Q in QX] for QX in self.all_Q] )
+        logger.debug("Empty status: %s" % self.get_qsize())
         for QX in [self.T_input,self.S_input,self.S_output]:
             for Q in QX:
                 if Q.qsize() > 0: return False
@@ -190,39 +256,30 @@ class multi_Manager(object):
         return True
 
     def cycle(self):
-        self.process_serial()
-        free = self.count_free_slots()
-        #print free, "slots open"
-        if not free: return False
+
+        for k in range(self.shutdown_level, self.task_n):
+            self.process_serial(k)
 
         # Pulling anything off of the last serial queue and discard it
-        while not self.S_output[-1].empty():
-            x = self.S_output[-1].get()
+        self.process_final_serial()
+
+        free = self.count_free_slots()
+        if not free: return False
 
         # Step through queues backwards
         # ignore first T and last S
-        for consumers, S_out,T_in,f in zip(
-                self.C[:1],
-                self.S_output[:1],
-                self.T_input[1:],
-                self.func_T[1:]):
-            
-            if consumers[0].is_alive():
-                while not S_out.empty():
-                    val  = S_out.get()
-                    task = Generic_Task(f, val)
-                    T_in.put(task)
-                    free -= 1
-                    if not free: return False
+        for k in range(self.shutdown_level, self.task_n-1):
+            status = self.load_queue(k, free)
+            if not status: return status
 
         # Pull from the source if still here
         for n in range(free):
             val = self.pull_source()
-            task = Generic_Task(self.func_T[0], val)
             if self._empty_source:
-                logger.debug("Source is now empty")
+                #logger.debug("Source is now empty")
                 break
 
+            task = Generic_Task(self.func_T[0], val)
             self.T_input[0].put( task )
 
         if self.is_empty():
@@ -237,6 +294,7 @@ def serial_a(x):
 
 def serial_b(x):
     #print ("B result: ", x)
+    time.sleep(.1)
     return x
 
 def mul2(x):
@@ -249,11 +307,11 @@ if __name__ == "__main__":
 
     #multiprocessing.set_start_method('spawn')
 
-    source = iter(range(10**3))
+    source = iter(range(5))
 
     M = multi_Manager(source, [mul2,sub3], [serial_a, serial_b], 
                       chunksize=10,
-                      procs=4)
+                      procs=1)
     M.run()
 
     print ("Finished gracefully!")
