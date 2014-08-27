@@ -6,7 +6,8 @@ import graph_tool
 import graph_tool.topology
 import graph_tool.spectral
 
-from src.helper_functions import load_graph_database, grab_vector, grab_all, select_itr
+from src.helper_functions import load_graph_database, grab_vector
+from src.helper_functions import grab_all, select_itr
 from src.invariants import graph_tool_representation
 import src.invariants as invar
 
@@ -17,9 +18,10 @@ parser.add_argument('N',type=int,default=4,
 parser.add_argument('--draw', default=False, action='store_true')
 parser.add_argument('--clear', default=False, action='store_true',
                     help="Clears this value from the database")
+parser.add_argument('--procs', default=None, type=int,
+                    help="Number of multiprocessers to use for each multitask")
 parser.add_argument('--force', default=False, action='store_true',
                     help="Clears and starts computation")
-
 
 def is_connected(g):
     component_size = graph_tool.topology.label_components(g)[1]
@@ -126,9 +128,9 @@ def record_E1_set(item):
             yield (N,e0,e1,E1_weights[e1])
 
     logging.info("Computed e0 ({})".format(e0))
-    print list(edge_insert_itr())
-
     meta_conn.executemany(cmd_insert, edge_insert_itr())
+
+#######################################################################
 
 cargs = vars(parser.parse_args())
 N = cargs["N"]
@@ -148,8 +150,8 @@ source = select_itr(conn,cmd_grab)
 from multi_chain import multi_Manager
 MULTI_TASKS  = [compute_valid_cuts,process_match_set]
 SERIAL_TASKS = [process_lap_poly,record_E1_set]
-M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS, procs=1,chunksize=1)
-#print [x for x in select_itr(conn,cmd_grab)]
+M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS,chunksize=50,
+                  procs=cargs["procs"])
 
 # Connect to the meta database and template it if needed
 meta_conn = sqlite3.connect("simple_meta.db")
@@ -210,44 +212,24 @@ if not num_ADJ:
 logging.info("Starting edge remove computation")
 M.run()
 
-print M.get_qsize()
-exit()
-
-'''
-exit()
-#MULTI_TASKS  = [compute_valid_cuts,process_match_set]
-#SERIAL_TASKS = [process_lap_poly,record_E1_set]
-#M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS, procs=1,chunksize=1)
-
-for item in source:
-    
-    print item
-    #print compute_valid_cuts(item)
-    #print process_lap_poly(compute_valid_cuts(item))
-    print process_match_set(process_lap_poly(compute_valid_cuts(item)))
-    record_E1_set(process_match_set(process_lap_poly(compute_valid_cuts(item))))
-    print
-
-M.shutdown()
-exit()
-'''
-
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete,(N,))
 meta_conn.commit()
 
 # Sanity check on the number of rows
-cmd_rows = "SELECT e0 FROM metagraph WHERE meta_n={}".format(N)
-E0_rows = set( grab_vector(meta_conn,cmd_rows) )
+#cmd_rows = "SELECT e0 FROM metagraph WHERE meta_n={}".format(N)
+#E0_rows = set( grab_vector(meta_conn,cmd_rows) )
+#print "Missing rows: ", set(ADJ.keys()).difference(E0_rows)
+#exit()
 
-select_itr(conn,cmd_grab)
- 
-print "Missing rows: ", set(ADJ.keys()).difference(E0_rows)
+cmd_select = '''SELECT e0,e1 FROM metagraph WHERE meta_n={}'''.format(N)
 
-exit()
-'''
+m = graph_tool.Graph(directed=False)
+m.add_vertex(len(ADJ))
 
-'''
+for (i,j) in select_itr(meta_conn, cmd_select):
+    m.add_edge(i-1,j-1)
+
 f_png = "figures/meta_simple_{}.png".format(N)
 logging.info("Saving %s"%f_png)
 

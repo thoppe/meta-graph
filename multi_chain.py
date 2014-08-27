@@ -71,11 +71,10 @@ class multi_Manager(object):
 
         assert(len(TASK_CHAIN) == len(SERIAL_CHAIN))
 
-        JQ = multiprocessing.JoinableQueue
-        RQ = multiprocessing.Queue
-        self.T_input  = [JQ() for _ in self.task_range]
-        self.S_input  = [RQ() for _ in self.task_range]
-        self.S_output = [RQ() for _ in self.task_range]
+        MQ = multiprocessing.Queue
+        self.T_input  = [MQ() for _ in self.task_range]
+        self.S_input  = [MQ() for _ in self.task_range]
+        self.S_output = [MQ() for _ in self.task_range]
 
         self.all_Q = [self.T_input,self.S_input,self.S_output]
 
@@ -168,16 +167,13 @@ class multi_Manager(object):
         logger.debug("Check status: %s" % self.get_qsize()) 
 
         for level in range(self.task_n):          
-            Q  = self.all_Q[0][level]
-            self._poison_queue(Q)
+            self._poison_queue(self.T_input[level])
+            self._poison_queue(self.S_input[level])
+            
+            for c in self.C[level]: c.join()
+            
+            self._poison_queue(self.S_output[level])
             self.process_serial(level)
-
-            Q  = self.all_Q[1][level]
-            self._poison_queue(Q)
-            self.process_serial(level)
-
-            Q  = self.all_Q[2][level]
-            self._poison_queue(Q)
 
             if level < self.task_n-1:
                 self.load_queue(level)
