@@ -17,7 +17,6 @@ desc = "Creates the connected simple edge meta-graph of order N"
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument('N', type=int, default=4,
                     help="graph order")
-parser.add_argument('--draw', default=False, action='store_true')
 parser.add_argument('--clear', default=False, action='store_true',
                     help="Clears this value from the database")
 parser.add_argument('--force', default=False, action='store_true',
@@ -255,26 +254,3 @@ M.run()
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete, (N,))
 meta_conn.commit()
-
-cmd_select = '''
-SELECT e0,e1 FROM metagraph
-WHERE meta_n={} AND direction=0'''.format(N)
-
-m = graph_tool.Graph(directed=False)
-m.add_vertex(len(ADJ))
-
-# Draw the undirected case, direction==0
-for (i, j) in select_itr(meta_conn, cmd_select):
-    m.add_edge(i - 1, j - 1)
-
-f_png = "figures/meta_simple_{}.png".format(N)
-logging.info("Saving {}".format(f_png))
-
-print("Saving")
-f_save = "reps/meta_{}.gml".format(N)
-m.save(f_save)
-
-print("Drawing")
-graph_tool.draw.graphviz_draw(m, layout="dot",
-                              output=f_png,
-                              vsize=.4, penwidth=4, size=(30, 30))
