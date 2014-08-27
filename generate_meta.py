@@ -164,7 +164,7 @@ def record_E1_set(item):
         for e1 in E0_weights:
             yield (N, e1, e0, E0_weights[e1], 1)
 
-    logging.info("Computed e0 ({})".format(e0))
+    logging.info("Computed meta_n {} e0 ({})".format(N,e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
 
 #
@@ -212,6 +212,7 @@ if cargs["clear"] or cargs["force"]:
     meta_conn.execute(cmd_clear_complete, (N,))
 
     if not cargs["force"]:
+        M.shutdown()
         exit()
 
 # Check if values have been computed, if so, exit early
@@ -222,9 +223,20 @@ if N in complete_n:
     M.shutdown()
     raise ValueError(msg)
 
+# Copy the graph_id, adj information from conn -> meta_conn
+cmd_select = '''SELECT graph_id,adj FROM graph'''
+input_information = select_itr(conn, cmd_select)
+cmd_copy_over = '''INSERT INTO graph (n,graph_id, adj) VALUES ({},?,?)'''
+cmd_copy_over = cmd_copy_over.format(N)
+meta_conn.executemany(cmd_copy_over, input_information)
+
+cmd_create_idx = '''
+CREATE INDEX IF NOT EXISTS idx_grap ON graph(n);'''
+meta_conn.execute(cmd_create_idx)
+
 # Make a mapping of all the graph id's
 logging.info("Loading the graph adj information")
-ADJ = dict(grab_all(conn, '''SELECT graph_id,adj FROM graph'''))
+ADJ = dict(grab_all(meta_conn, '''SELECT graph_id,adj FROM graph'''))
 
 # Grab all the Laplacian polynomials
 logging.info("Loading the Laplacian database")
@@ -250,6 +262,10 @@ if not num_ADJ:
 
 logging.info("Starting edge remove computation")
 M.run()
+
+cmd_create_idx = '''
+CREATE INDEX IF NOT EXISTS idx_metagraph ON metagraph(meta_n);'''
+meta_conn.execute(cmd_create_idx)
 
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete, (N,))
