@@ -9,7 +9,7 @@ import graph_tool.topology
 import graph_tool.spectral
 
 from src.helper_functions import load_graph_database, grab_vector
-from src.helper_functions import grab_all, select_itr
+from src.helper_functions import grab_all, select_itr, grab_scalar
 from src.invariants import graph_tool_representation
 import src.invariants as invar
 
@@ -21,6 +21,8 @@ parser.add_argument('--clear', default=False, action='store_true',
                     help="Clears this value from the database")
 parser.add_argument('--force', default=False, action='store_true',
                     help="Clears and starts computation")
+parser.add_argument('--test', default=False, action='store_true',
+                    help="Does not save the computation.")
 parser.add_argument('--procs', default=None, type=int,
                     help="Number of multiprocessers to use for each multitask")
 parser.add_argument('--chunksize', default=50, type=int,
@@ -108,23 +110,17 @@ def compute_valid_cuts(item):
     return e0, g, iso_set, laplacian_map
 
 
-def possible_laplacian_match(L):
-    ''' Determine which graphs have this particular Laplacian polynomial '''
-
-    return [(k, ADJ[k]) for k in LPOLY[L]]
-
-
 def process_lap_poly(item):
     ''' Serial function to determine which the graphs
     in the Laplacian database '''
     e0, g, iso_set, L_MAP = item
 
     L_GRAPH_MAP = {}
-    for h, L in L_MAP.items():
-        match_set = possible_laplacian_match(L)
+    for h, L in L_MAP.iteritems():
+        # Determine which graphs have this particular Laplacian polynomial '''
+        match_set = [(k, ADJ[k]) for k in LPOLY[L]]
         L_GRAPH_MAP[h] = match_set
     return (e0, g, iso_set, L_GRAPH_MAP)
-
 
 def process_match_set(item):
     ''' Determine the weights of the meta edges. '''
@@ -167,7 +163,7 @@ def record_E1_set(item):
     logging.info("Computed meta_n {} e0 ({})".format(N,e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
 
-#
+# ######################################################################
 
 cargs = vars(parser.parse_args())
 N = cargs["N"]
@@ -178,6 +174,86 @@ logging.root.setLevel(logging.INFO)
 # Connect to the database
 conn = load_graph_database(N)
 sconn = load_graph_database(N, special=True)
+
+# Build the Laplacian database
+cmd_grab_adj = '''SELECT graph_id,adj FROM graph'''
+source = select_itr(conn, cmd_grab_adj)
+
+f_lconn = "meta_db/lap_{}.db".format(N)
+lconn = sqlite3.connect(f_lconn, check_same_thread=False)
+# Template lconn
+cmd_template = '''
+CREATE TABLE IF NOT EXISTS ref_L(
+    L_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    {rows},
+    {unique_constraint}
+);
+
+CREATE TABLE IF NOT EXISTS laplacian(
+    graph_id UNSIGNED INTEGER  PRIMARY KEY,
+    L_id INTEGER,
+    adj UNSIGNED BIG INT
+);
+'''
+col_names = ['coeff_{}'.format(k) for k in range(1,N+1)]
+rows = ',\n'.join(['\t{} INTEGER'.format(name) for name in col_names])
+unique_con = 'UNIQUE ({})'.format(','.join(col_names))
+print cmd_template.format(rows=rows,
+                          unique_constraint=unique_con)
+
+lconn.executescript(cmd_template.format(rows=rows,
+                                        unique_constraint=unique_con))
+
+single_grab = '''
+SELECT x_degree,coeff FROM laplacian_polynomial
+WHERE graph_id = (?) ORDER BY x_degree,coeff'''
+cmd_insert = '''INSERT OR IGNORE INTO ref_L ({}) VALUES ({})'''
+qmarks = ['?']*len(col_names)
+cmd_insert = cmd_insert.format(','.join(col_names), ','.join(qmarks))
+
+def L_iter(source):
+    for g_id, adj in source:
+        L_result = grab_all(sconn, single_grab,(g_id,))
+        L = zip(*L_result)[1]
+        yield L
+
+lconn.executemany(cmd_insert, L_iter(source))
+
+cmd_index = '''CREATE INDEX IF NOT EXISTS idx_ref_L ON ref_L ({})'''
+lconn.execute(cmd_index.format(','.join(col_names)))
+
+def L_indexed_value(source):
+    cmd_find = '''SELECT L_id FROM ref_L WHERE {cond}'''
+
+    for g_id, adj in source:
+        L_result = grab_all(sconn, single_grab,(g_id,))
+        L = zip(*L_result)[1]
+        cond = ' AND '.join(["{}={}".format(name,val) for name,val in 
+                             zip(col_names, L)])
+        L_id = grab_scalar(lconn, cmd_find.format(cond=cond))
+        yield L_id,g_id,adj
+
+cmd_insert = '''INSERT INTO laplacian 
+(L_id, graph_id, adj) VALUES (?,?,?)'''
+
+source = select_itr(conn, cmd_grab_adj)
+lconn.executemany(cmd_insert, L_indexed_value(source))
+
+cmd_index = '''CREATE INDEX IF NOT EXISTS idx_laplacian ON laplacian (adj)'''
+lconn.execute(cmd_index)
+
+#for L_id,g_id,adj in L_indexed_value(source):
+#   
+#   print L_id, g_id, adj
+    
+
+
+lconn.commit()
+
+exit()
+exit()
+
+
 
 # Build the source generator, tuple of (graph_id, adj)
 cmd_grab = '''SELECT graph_id,adj FROM graph'''
@@ -193,7 +269,7 @@ M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS,
 
 # Connect to the meta database and template it if needed
 meta_conn = sqlite3.connect("simple_meta.db")
-with open("template_meta.sql") as FIN:
+with open("templates/meta.sql") as FIN:
     script = FIN.read()
     meta_conn.executescript(script)
     meta_conn.commit()
@@ -203,13 +279,12 @@ if cargs["clear"] or cargs["force"]:
     cmd_clear = '''DELETE FROM metagraph WHERE meta_n = (?)'''
     logging.warning("Clearing metagraph values {}".format(N))
     meta_conn.execute(cmd_clear, (N,))
-    meta_conn.commit()
-
     meta_conn.execute("VACUUM")
-    meta_conn.commit()
 
     cmd_clear_complete = '''DELETE FROM computed WHERE meta_n = (?)'''
     meta_conn.execute(cmd_clear_complete, (N,))
+
+    meta_conn.commit()
 
     if not cargs["force"]:
         M.shutdown()
@@ -224,12 +299,16 @@ if N in complete_n:
     raise ValueError(msg)
 
 # Copy the graph_id, adj information from conn -> meta_conn
+logging.info("Populating the adj database")
 cmd_select = '''SELECT graph_id,adj FROM graph'''
 input_information = select_itr(conn, cmd_select)
-cmd_copy_over = '''INSERT INTO graph (n,graph_id, adj) VALUES ({},?,?)'''
+cmd_copy_over = '''INSERT OR IGNORE INTO 
+graph (n,graph_id, adj) VALUES ({},?,?)'''
+
 cmd_copy_over = cmd_copy_over.format(N)
 meta_conn.executemany(cmd_copy_over, input_information)
 
+logging.info("Building the adj index")
 cmd_create_idx = '''
 CREATE INDEX IF NOT EXISTS idx_grap ON graph(n);'''
 meta_conn.execute(cmd_create_idx)
@@ -260,8 +339,12 @@ if not num_ADJ:
     raise ValueError(msg)
 
 
-logging.info("Starting edge remove computation")
+logging.info("Started building the meta graph")
+
 M.run()
+
+if cargs["test"]:
+    exit()
 
 cmd_create_idx = '''
 CREATE INDEX IF NOT EXISTS idx_metagraph ON metagraph(meta_n);'''

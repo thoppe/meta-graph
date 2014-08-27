@@ -1,8 +1,13 @@
+n = 5
+
 all:
-	python generate_meta.py 4
+	python generate_meta.py $(n)
 
 view:
-	sqlitebrowser simple_meta.db
+	sqlitebrowser meta_db/simple_meta.db
+
+view_lap:
+	sqlitebrowser meta_db/lap_$(n).db
 
 max_n = 10
 possible_N_values = $(shell seq 1 ${max_n})

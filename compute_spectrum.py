@@ -16,7 +16,12 @@ cargs = vars(parser.parse_args())
 N = cargs["N"]
 
 # Connect to the database
-conn = sqlite3.connect("simple_meta.db")
+meta_conn = sqlite3.connect("simple_meta.db")
+
+cmd_count = "SELECT COUNT(*) FROM graph WHERE n=(?)"
+vertex_n = grab_scalar(meta_conn, cmd_count, (N,))
+print vertex_n
+exit()
 
 # Count the vertices
 def count_vertex(N):
