@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS metagraph(
     e0     INTEGER,
     e1     INTEGER,
     weight INTEGER,
+    direction TINYINT,
     UNIQUE (meta_n, e0, e1, weight)
 );
 

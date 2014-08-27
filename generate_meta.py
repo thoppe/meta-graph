@@ -92,40 +92,49 @@ def compute_valid_cuts( item ):
         A = graph_tool.spectral.adjacency(h)
         laplacian_map[h] = invar.special_laplacian_polynomial(A,N=N)
 
-    return e0, iso_set, laplacian_map
+    return e0, g, iso_set, laplacian_map
 
 def process_lap_poly(item):
-    e0, iso_set,L_MAP = item
+    e0, g, iso_set,L_MAP = item
 
     L_GRAPH_MAP = {}
     for h,L in L_MAP.items():
         match_set = possible_laplacian_match(L)
         L_GRAPH_MAP[h] = match_set
-    return (e0, iso_set, L_GRAPH_MAP)
+    return (e0, g, iso_set, L_GRAPH_MAP)
 
 def process_match_set(item):
-    e0,iso_set,L_GRAPH_MAP = item
+    e0,g,iso_set,L_GRAPH_MAP = item
 
     E1_weights = {}
+    E0_weights = collections.defaultdict(int)
     for h,match_set in L_GRAPH_MAP.items():
         e1 = identify_match_from_adj(h,match_set)
         E1_weights[e1] = iso_set[h] 
 
-    return (e0,E1_weights)
+        # Now determine the reverse weight
+        for v1,v2 in itertools.combinations(h.vertices(),2):
+            h2 = h.copy()
+            h2.add_edge(v1,v2)
+            E0_weights[e1] += graph_tool.topology.isomorphism(g,h2)
+
+    return (e0,E1_weights,E0_weights)
 
 def record_E1_set(item):
 
-    e0,E1_weights = item
+    e0,E1_weights,E0_weights = item
 
     cmd_insert = '''
     INSERT INTO metagraph 
-    (meta_n,e0,e1,weight)
-    VALUES (?,?,?,?)
+    (meta_n,e0,e1,weight,direction)
+    VALUES (?,?,?,?,?)
     '''
 
     def edge_insert_itr():
         for e1 in E1_weights:
-            yield (N,e0,e1,E1_weights[e1])
+            yield (N,e0,e1,E1_weights[e1],0)
+        for e1 in E0_weights:
+            yield (N,e1,e0,E0_weights[e1],1)
 
     logging.info("Computed e0 ({})".format(e0))
     meta_conn.executemany(cmd_insert, edge_insert_itr())
@@ -223,11 +232,14 @@ meta_conn.commit()
 #print "Missing rows: ", set(ADJ.keys()).difference(E0_rows)
 #exit()
 
-cmd_select = '''SELECT e0,e1 FROM metagraph WHERE meta_n={}'''.format(N)
+cmd_select = '''
+SELECT e0,e1 FROM metagraph 
+WHERE meta_n={} AND direction=0'''.format(N)
 
 m = graph_tool.Graph(directed=False)
 m.add_vertex(len(ADJ))
 
+# Draw the undirected case
 for (i,j) in select_itr(meta_conn, cmd_select):
     m.add_edge(i-1,j-1)
 
