@@ -268,7 +268,7 @@ for (i, j) in select_itr(meta_conn, cmd_select):
     m.add_edge(i - 1, j - 1)
 
 f_png = "figures/meta_simple_{}.png".format(N)
-logging.info("Saving %s" % f_png)
+logging.info("Saving {}".format(f_png))
 
 print("Saving")
 f_save = "reps/meta_{}.gml".format(N)
