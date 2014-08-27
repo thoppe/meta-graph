@@ -181,6 +181,7 @@ cmd_check_complete = '''SELECT meta_n FROM computed'''
 complete_n = grab_vector(meta_conn,cmd_check_complete)
 if N in complete_n:
     msg = "meta {} has already been computed, exiting".format(N)
+    M.shutdown()
     raise ValueError(msg)
     
 # Make a mapping of all the graph id's
