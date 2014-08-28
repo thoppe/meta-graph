@@ -12,6 +12,9 @@ view_lap:
 max_n = 10
 possible_N_values = $(shell seq 1 ${max_n})
 
+build_lap:
+	$(foreach n,$(possible_N_values),python build_lap_db.py $(n);)
+
 build:
 	$(foreach n,$(possible_N_values),python generate_meta.py $(n) --chunksize 1000;)
 
@@ -22,6 +25,7 @@ draw:
 	$(foreach n,$(possible_N_draw),python draw_meta.py $(n) --draw;)
 
 full_clean:
+	rm -vf meta_db/*
 	rm -vf simple_meta.db
 	rm -vf reps/*.gml figures/meta_simple_*.png
 
