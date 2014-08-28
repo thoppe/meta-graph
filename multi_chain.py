@@ -2,6 +2,7 @@ import multiprocessing
 import time
 import traceback
 import logging
+import itertools
 
 logger = logging.getLogger()
 logging.basicConfig()
@@ -12,7 +13,9 @@ class PoisonPill(object):
 
     def __repr__(self):
         return "PoisonPill"
+    def set_internal_id(self, _): pass
 
+_counsumer_counter = itertools.count(0)
 
 class Consumer(multiprocessing.Process):
 
@@ -20,6 +23,7 @@ class Consumer(multiprocessing.Process):
         multiprocessing.Process.__init__(self)
         self.task_queue = task_queue
         self.result_queue = result_queue
+        self.id = _counsumer_counter.next()
 
     def ate_poison(self, task):
         return isinstance(task, PoisonPill)
@@ -30,6 +34,8 @@ class Consumer(multiprocessing.Process):
             logger.debug("{} is waiting".format(proc_name))
             next_task = self.task_queue.get()
             logger.debug("{} has got {}".format(proc_name, next_task))
+
+            next_task.set_internal_id(self.id)
 
             if self.ate_poison(next_task):
                 return
@@ -53,12 +59,14 @@ class Generic_Task(object):
         self.func = func
         self.args = args
         self.kwargs = kwargs
+    def set_internal_id(self, idx):
+        self.kwargs["_internal_id"] = idx
 
     def __call__(self):
         return self.func(*self.args, **self.kwargs)
 
     def __repr__(self):
-        return "{}{}".format(self.func, self.args)
+        return "{}{}{}".format(self.func, self.args,self.kwargs)
 
 
 class multi_Manager(object):
@@ -83,8 +91,8 @@ class multi_Manager(object):
         assert(len(TASK_CHAIN) == len(SERIAL_CHAIN))
 
         MQ = multiprocessing.Queue
-        self.T_input = [MQ() for _ in self.task_range]
-        self.S_input = [MQ() for _ in self.task_range]
+        self.T_input  = [MQ() for _ in self.task_range]
+        self.S_input  = [MQ() for _ in self.task_range]
         self.S_output = [MQ() for _ in self.task_range]
 
         self.all_Q = [self.T_input, self.S_input, self.S_output]

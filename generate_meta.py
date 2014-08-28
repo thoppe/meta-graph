@@ -3,6 +3,7 @@ import logging
 import argparse
 import collections
 import itertools
+import multiprocessing
 
 import graph_tool
 import graph_tool.topology
@@ -23,11 +24,30 @@ parser.add_argument('--force', default=False, action='store_true',
                     help="Clears and starts computation")
 parser.add_argument('--test', default=False, action='store_true',
                     help="Does not save the computation.")
-parser.add_argument('--procs', default=None, type=int,
+parser.add_argument('--procs', default= multiprocessing.cpu_count(), type=int,
                     help="Number of multiprocessers to use for each multitask")
 parser.add_argument('--chunksize', default=50, type=int,
                     help="Chunks to feed to the multiprocessers")
 
+
+cargs = vars(parser.parse_args())
+N = cargs["N"]
+
+# Start the logger
+logging.root.setLevel(logging.INFO)
+
+logging.info("Starting laplacian build {}".format(N))
+
+# Connect to the database
+conn = load_graph_database(N)
+sconn = load_graph_database(N, special=True)
+
+f_lconn = "meta_db/lap_{}.db".format(N)
+lconn = sqlite3.connect(f_lconn)#, check_same_thread=False)
+
+# Connect to the meta database and template it if needed
+f_meta_conn = "meta_db/simple_connected_{}.db".format(N)
+meta_conn = sqlite3.connect(f_meta_conn)
 
 def is_connected(g):
     ''' Returns 1 if a graph-tool graph is connected '''
@@ -89,11 +109,18 @@ def identify_match_from_adj(g, match_set):
     # raise ValueError("should find match already")
 
 
-def compute_valid_cuts(item):
+search_col_names = ['coeff_{}'.format(k) for k in range(1,N+1)]
+search_cond = ' AND '.join(["{}=?".format(name) for name in search_col_names])
+cmd_search_laplacian = '''
+SELECT graph_id,adj FROM laplacian WHERE L_id IN 
+(SELECT L_id FROM ref_L WHERE {})'''.format(search_cond)
+
+def compute_meta_edge(item, **kwargs):
     '''
     Build a graph from adj and determine the unique graphs that can
     be made by removing a single edge. For each isomorphically distinct
-    graph, compute the Laplacian. '''
+    graph, compute the Laplacian. Use the Laplacian to quickly identify the connected
+    meta edges and compute the forward and backwards weights.'''
 
     e0, target_adj = item
 
@@ -101,35 +128,16 @@ def compute_valid_cuts(item):
     g = graph_tool_representation(target_adj, N=N)
     iso_set = find_iso_set_from_cut(g)
 
-    laplacian_map = dict()
+    E1_weights = {}
+    E0_weights = collections.defaultdict(int)
+    lconn = LCONN_CONNECTIONS[kwargs["_internal_id"]]
 
     for h in iso_set:
         A = graph_tool.spectral.adjacency(h)
-        laplacian_map[h] = invar.special_laplacian_polynomial(A, N=N)
+        L = invar.special_laplacian_polynomial(A, N=N)
+        degree,coeff = zip(*L)    
+        match_set = grab_all(lconn, cmd_search_laplacian, coeff)
 
-    return e0, g, iso_set, laplacian_map
-
-
-def process_lap_poly(item):
-    ''' Serial function to determine which the graphs
-    in the Laplacian database '''
-    e0, g, iso_set, L_MAP = item
-
-    L_GRAPH_MAP = {}
-    for h, L in L_MAP.iteritems():
-        # Determine which graphs have this particular Laplacian polynomial '''
-        match_set = [(k, ADJ[k]) for k in LPOLY[L]]
-        L_GRAPH_MAP[h] = match_set
-    return (e0, g, iso_set, L_GRAPH_MAP)
-
-def process_match_set(item):
-    ''' Determine the weights of the meta edges. '''
-
-    e0, g, iso_set, L_GRAPH_MAP = item
-
-    E1_weights = {}
-    E0_weights = collections.defaultdict(int)
-    for h, match_set in L_GRAPH_MAP.items():
         # Figure out the forward weights
         e1 = identify_match_from_adj(h, match_set)
         E1_weights[e1] = iso_set[h]
@@ -142,8 +150,7 @@ def process_match_set(item):
 
     return (e0, E1_weights, E0_weights)
 
-
-def record_E1_set(item):
+def record_edge_set(item,**kw):
     ''' Save the weights into the meta_conn database. '''
 
     e0, E1_weights, E0_weights = item
@@ -165,27 +172,24 @@ def record_E1_set(item):
 
 # ######################################################################
 
-
-
-print "Refactor code from this point"
-exit()
-
-
-
 # Build the source generator, tuple of (graph_id, adj)
 cmd_grab = '''SELECT graph_id,adj FROM graph'''
 source = select_itr(conn, cmd_grab)
 
+# Build a list of database connections
+LCONN_CONNECTIONS = [sqlite3.connect(f_lconn) for _ in range(cargs["procs"])]
+
 # Build the multichain process early while nothing is allocated
 from multi_chain import multi_Manager
-MULTI_TASKS = [compute_valid_cuts, process_match_set]
-SERIAL_TASKS = [process_lap_poly, record_E1_set]
+MULTI_TASKS  = [compute_meta_edge,]
+SERIAL_TASKS = [record_edge_set,]
 M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS,
                   chunksize=cargs["chunksize"],
                   procs=cargs["procs"])
 
 # Connect to the meta database and template it if needed
 meta_conn = sqlite3.connect("simple_meta.db")
+
 with open("templates/meta.sql") as FIN:
     script = FIN.read()
     meta_conn.executescript(script)
@@ -212,8 +216,9 @@ cmd_check_complete = '''SELECT meta_n FROM computed'''
 complete_n = grab_vector(meta_conn, cmd_check_complete)
 if N in complete_n:
     msg = "meta {} has already been computed, exiting".format(N)
+    print(msg)
     M.shutdown()
-    raise ValueError(msg)
+    exit()
 
 # Copy the graph_id, adj information from conn -> meta_conn
 logging.info("Populating the adj database")
@@ -230,34 +235,7 @@ cmd_create_idx = '''
 CREATE INDEX IF NOT EXISTS idx_grap ON graph(n);'''
 meta_conn.execute(cmd_create_idx)
 
-# Make a mapping of all the graph id's
-logging.info("Loading the graph adj information")
-ADJ = dict(grab_all(meta_conn, '''SELECT graph_id,adj FROM graph'''))
-
-# Grab all the Laplacian polynomials
-logging.info("Loading the Laplacian database")
-single_grab = '''
-SELECT x_degree,coeff FROM laplacian_polynomial
-WHERE graph_id = (?) ORDER BY x_degree,coeff'''
-LPOLY = collections.defaultdict(list)
-
-for gid in ADJ:
-    L = tuple(grab_all(sconn, single_grab, (gid,)))
-    LPOLY[L].append(gid)
-
-num_LPOLY = len(LPOLY)
-num_ADJ = len(ADJ)
-if not num_LPOLY:
-    msg = "LPOLY database is empty"
-    raise ValueError(msg)
-
-if not num_ADJ:
-    msg = "ADJ database is empty"
-    raise ValueError(msg)
-
-
 logging.info("Started building the meta graph")
-
 M.run()
 
 if cargs["test"]:
@@ -270,3 +248,4 @@ meta_conn.execute(cmd_create_idx)
 cmd_mark_complete = "INSERT INTO computed VALUES (?)"
 meta_conn.execute(cmd_mark_complete, (N,))
 meta_conn.commit()
+
