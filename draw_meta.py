@@ -14,8 +14,9 @@ parser.add_argument('N', type=int, default=4,
 cargs = vars(parser.parse_args())
 N = cargs["N"]
 
-# Connect to the database
-meta_conn = sqlite3.connect("simple_meta.db")
+# Connect to the meta database and template it if needed
+f_meta_conn = "meta_db/simple_connected_{}.db".format(N)
+meta_conn = sqlite3.connect(f_meta_conn)
 
 # Check if values have been computed, if not, exit early
 cmd_check_complete = '''SELECT meta_n FROM computed'''

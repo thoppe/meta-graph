@@ -187,9 +187,6 @@ M = multi_Manager(source, MULTI_TASKS, SERIAL_TASKS,
                   chunksize=cargs["chunksize"],
                   procs=cargs["procs"])
 
-# Connect to the meta database and template it if needed
-meta_conn = sqlite3.connect("simple_meta.db")
-
 with open("templates/meta.sql") as FIN:
     script = FIN.read()
     meta_conn.executescript(script)

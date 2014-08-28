@@ -4,7 +4,7 @@ all:
 	python generate_meta.py $(n)
 
 view:
-	sqlitebrowser meta_db/simple_meta.db
+	sqlitebrowser meta_db/simple_connected_$(n).db
 
 view_lap:
 	sqlitebrowser meta_db/lap_$(n).db
