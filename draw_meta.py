@@ -14,7 +14,7 @@ parser.add_argument('N', type=int, default=4,
 cargs = vars(parser.parse_args())
 N = cargs["N"]
 
-# Connect to the meta database and template it if needed
+# Connect to the meta database
 f_meta_conn = "meta_db/simple_connected_{}.db".format(N)
 meta_conn = sqlite3.connect(f_meta_conn)
 

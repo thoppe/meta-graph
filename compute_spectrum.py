@@ -15,58 +15,37 @@ parser.add_argument('N',type=int,default=4,
 cargs = vars(parser.parse_args())
 N = cargs["N"]
 
-# Connect to the database
-meta_conn = sqlite3.connect("simple_meta.db")
+# Connect to the meta database
+f_meta_conn = "meta_db/simple_connected_{}.db".format(N)
+meta_conn = sqlite3.connect(f_meta_conn)
 
-cmd_count = "SELECT COUNT(*) FROM graph WHERE n=(?)"
-vertex_n = grab_scalar(meta_conn, cmd_count, (N,))
+cmd_count = "SELECT COUNT(*) FROM graph"
+vertex_n = grab_scalar(meta_conn, cmd_count)
 print vertex_n
-exit()
 
-# Count the vertices
-def count_vertex(N):
-    VSET = set()
-    cmd = '''SELECT e0,e1 FROM metagraph WHERE meta_n = {}'''.format(N)
-    for e0,e1 in select_itr(conn,cmd):
-        VSET.add(e0)
-        VSET.add(e1)
-    return len(VSET)
+cmd_count = "SELECT COUNT(*) FROM metagraph"
+edge_n = grab_scalar(meta_conn, cmd_count)
 
-# Grab the edges
-def edge_itr(N):
-    cmd = '''SELECT e0,e1 FROM metagraph WHERE meta_n = {}'''.format(N)
-    for e0,e1 in select_itr(conn,cmd):
-        yield e0,e1
-
-def build_networkx(N):
-    g = nx.Graph(directed=False)
-    for e0,e1 in edge_itr(N):
-        g.add_edge(e0,e1)
-    return g
-
-def build_graph_tool(N):
-    g = gt.Graph(directed=False)
-    V = count_vertex(N)
-    g.add_vertex(V)
-    for e0,e1 in edge_itr(N):
+g = gt.Graph(directed=True)
+g.add_vertex(vertex_n)
+e_itr = select_itr(meta_conn,"SELECT e0,e1,weight FROM metagraph")
+for (e0,e1,w) in e_itr:
+    for _ in xrange(w):
         g.add_edge(e0-1,e1-1)
-    return g
 
-def compute_adj_spectrum(g):
-    A = gt.spectral.adjacency(g)
-    L,V = scipy.linalg.eigh(A.todense())
-    idx = np.argsort(L)[::-1]
-    L = L[idx]
-    return L
+g_reduced = gt.Graph(directed=False)
+g_reduced.add_vertex(vertex_n)
+e_itr = select_itr(meta_conn,'''SELECT e0,e1 
+FROM metagraph WHERE direction =0''')
+for (e0,e1) in e_itr:
+    g_reduced.add_edge(e0-1,e1-1)
 
+T = gt.spectral.transition(g).T
 
-def compute_trans_spectrum(g):
-    T = gt.spectral.transition(g).T
-    L,V = scipy.linalg.eig(T.todense())
-    idx = np.argsort(L.real)[::-1]
-    L = L[idx]
-    V = V[:,idx]
-    return L.real, V
+L,V = scipy.linalg.eig(T.todense())
+idx = np.argsort(L.real)[::-1]
+L = L[idx]
+V = V[:,idx]
 
 def draw_spectral(g, v_weight,output=None):
     vprop = g.new_vertex_property("double")
@@ -76,32 +55,19 @@ def draw_spectral(g, v_weight,output=None):
     draw = graph_tool.draw.graphviz_draw
     draw(g,layout="dot",
          vcolor=vprop,
-         vsize=.4,penwidth=4,size=(30,30),
+         vsize=.5,penwidth=2,size=(30,30),
          output=output)
 
+for k in xrange(4):
+    v = V.T[k]
+    v /= np.linalg.norm(v)
+    if sum(v)<0: v *= -1
+    v /= np.abs(v).max()
+    print v
+   
+    f_png = "figures/modes_N_{}_k_{}.png".format(N,k)
 
+    draw_spectral(g_reduced, v,output=f_png)
 
-import pylab as plt
-import seaborn as sns
+exit()
 
-for N in xrange(3,9):
-    print "Meta_n: ", N
-    g = build_graph_tool(N)
-    print "Edges: ", g.num_edges()
-    print "Vertices: ", g.num_vertices()
-    text = r"$N={}$".format(N)
-
-    L,V = compute_trans_spectrum(g)
-    X = np.linspace(0,1,L.size)
-
-    for k in range(min(16,len(L))):
-        print N,k
-
-        mode = V.T[k]
-        mode /= np.abs(mode).sum()
-        f_png = "modes_N_{}_k_{}.png".format(N,k)
-        draw_spectral(g, mode,output=f_png)
-
-#    plt.plot(X,L,label=text)
-#plt.legend(loc="best")
-#plt.show()
