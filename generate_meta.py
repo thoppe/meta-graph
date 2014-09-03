@@ -205,7 +205,6 @@ if cargs["clear"] or cargs["force"]:
     meta_conn.commit()
 
     if not cargs["force"]:
-        M.shutdown()
         exit()
 
 # Check if values have been computed, if so, exit early
@@ -214,7 +213,6 @@ complete_n = grab_vector(meta_conn, cmd_check_complete)
 if N in complete_n:
     msg = "meta {} has already been computed, exiting".format(N)
     print(msg)
-    M.shutdown()
     exit()
 
 # Copy the graph_id, adj information from conn -> meta_conn
