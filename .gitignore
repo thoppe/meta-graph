@@ -1,6 +1,11 @@
 # Pictures
 figures/*
 
+# Ignore the tmp files
+*~
+\#*
+
+
 # Ignore the database files
 *.db
 
